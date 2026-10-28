@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: katenutri
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_NAME
+        value: KateNutri
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ALLOW_SIGNUP
+        value: "true"
+      - key: SEED_DEMO
+        value: "true"
+      - key: DATABASE_URL   # Neon/PostgreSQL connection string — permanent storage
+        sync: false
+      - key: DATA_DIR       # only used when DATABASE_URL is empty (dev)
+        value: ./data
