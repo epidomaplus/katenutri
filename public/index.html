@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F7E35B">
+<meta name="robots" content="noindex">
+<meta name="description" content="KateNutri — πελατολόγιο, μετρήσεις, ενεργειακές ανάγκες και διαιτολόγια με ισοδύναμα.">
+<title>KateNutri</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="stylesheet" href="/css/app.css">
+<script>
+try {
+  const t = localStorage.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.dataset.theme = t;
+} catch (e) {}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="toasts" aria-live="polite"></div>
+<noscript><p style="padding:24px">Η εφαρμογή χρειάζεται JavaScript.</p></noscript>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "KateNutri",
+  "short_name": "KateNutri",
+  "description": "Διαιτολογικό γραφείο: πελάτες, μετρήσεις, ισοδύναμα και διαιτολόγια.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FFF4B8",
+  "theme_color": "#F7E35B",
+  "lang": "el",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

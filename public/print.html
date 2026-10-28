@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Εκτύπωση</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; color: #2B2B2B; margin: 24px; font-size: 13px; }
+  body.large { font-size: 16px; }
+  body.large h1 { font-size: 28px; }
+  h1 { margin: 0 0 4px; font-size: 22px; color: #2B2B2B; }
+  h2 { font-size: 16px; margin: 0 0 6px; display: flex; justify-content: space-between; gap: 8px; }
+  .meta, .muted { color: #66615A; }
+  .logo { max-height: 48px; max-width: 160px; }
+  .day, .card { break-inside: avoid; border: 1px solid #EDE3B5; border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { border-bottom: 1px solid #F3EBC6; padding: 4px 6px; text-align: right; vertical-align: top; }
+  th:first-child, td:first-child { text-align: left; }
+  .tools { margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .tools button { padding: 8px 14px; border-radius: 8px; border: 1px solid #E9D23F; background: #F7E35B; color: #2B2B2B; font: inherit; cursor: pointer; }
+  .foot { color: #66615A; font-size: 11px; margin-top: 16px; }
+  @page plan { size: A4 portrait; margin: 12mm; }
+  @page wide { size: A4 landscape; margin: 10mm; }
+  body.sheet-plan, body.sheet-analysis, body.sheet-shopping, body.sheet-recipe { page: plan; }
+  body.sheet-visits { page: wide; }
+  @media print { .tools { display: none !important; } body { margin: 0; } }
+</style>
+</head>
+<body>
+<div class="tools" id="tools"></div>
+<div id="out">Φόρτωση…</div>
+<script type="module" src="/print.js"></script>
+</body>
+</html>
