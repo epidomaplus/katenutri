@@ -2,6 +2,7 @@ import { api, state } from './api.js';
 import { bus, esc, setHandlers, toast } from './util.js';
 import { fmt, elDate, todayISO } from '/shared/text.js';
 import { normalizePlan, dayNut, dayEx, sumEx, EXCHANGE_DISCLAIMER } from '/shared/nutrition.js';
+import { prescriptionSummary } from '/shared/prescription.js';
 import { exText } from './format.js';
 
 export async function portalPage(tab) {
@@ -44,7 +45,8 @@ async function plan() {
       if (host) host.innerHTML = markup();
     },
   });
-  return `<div class="page-h"><div><h1>${esc(full.title)}</h1><p class="muted">${full.clientName ? esc(full.clientName) + ' · ' : ''}${data.targetKcal ? 'Στόχος ' + esc(data.targetKcal) + ' kcal' : ''}</p></div>
+  const rx = prescriptionSummary(data);
+  return `<div class="page-h"><div><h1>${esc(full.title)}</h1><p class="muted">${full.clientName ? esc(full.clientName) + ' · ' : ''}${rx ? 'Εντολή: ' + esc(rx) : (data.targetKcal ? 'Στόχος ' + esc(data.targetKcal) + ' kcal' : '')}</p></div>
     <div class="seg"><button type="button" data-act="p-mode" data-mode="macros">Μακροθρεπτικά</button><button type="button" data-act="p-mode" data-mode="exchanges">Ισοδύναμα</button><button type="button" data-act="p-mode" data-mode="both">Και τα δύο</button></div></div>
   ${plans.length > 1 ? `<p>${plans.map(p => `<a class="btn sm ${p.id === full.id ? 'primary' : ''}" href="#/portal?plan=${esc(p.id)}">${esc(p.title)}</a>`).join(' ')}</p>` : ''}
   <div id="portal-plan">${markup()}</div>

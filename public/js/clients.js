@@ -2,6 +2,7 @@ import { api } from './api.js';
 import { bus, esc, setHandlers, toast, emptyState, sexLabel, copyText, modal } from './util.js';
 import { fmt, elDate, todayISO, euro } from '/shared/text.js';
 import { ageFromDob, bmi, bmrMifflin, bmrHarris, ACTIVITIES, emptyPlan } from '/shared/nutrition.js';
+import { percentsFromEstimate, targetsFromPercents, emptyMacroTargets } from '/shared/prescription.js';
 import { MEASURE_FORM, sheetSections, skinfoldSum, whr } from '/shared/measures.js';
 import { lineChart } from '/shared/chart.js';
 
@@ -285,7 +286,10 @@ async function saveEnergy(client, makePlan) {
   if (!makePlan) { toast('Η εκτίμηση αποθηκεύτηκε'); return; }
   const data = emptyPlan();
   data.targetKcal = String(Math.round(r.kcal));
-  data.macroTargets = { protein: String(Math.round(r.pG)), carbs: String(Math.round(r.cG)), fat: String(Math.max(0, Math.round(r.fG))) };
+  const split = percentsFromEstimate(r.kcal, { protein: r.pG, carbs: r.cG, fat: Math.max(0, r.fG) });
+  data.macroTargets = split
+    ? targetsFromPercents(r.kcal, split)
+    : { ...emptyMacroTargets(), protein: String(Math.round(r.pG)), carbs: String(Math.round(r.cG)), fat: String(Math.max(0, Math.round(r.fG))) };
   if (r.useCarb) data.exchangeTargets.carb = String(Math.round(r.carbEx));
   const plan = await api('/api/plans', { method: 'POST', body: { clientId: client.id, clientName: client.name, title: `Πλάνο ${Math.round(r.kcal)} kcal`, data } });
   location.hash = '/plan/' + plan.id;
@@ -299,7 +303,7 @@ async function plans(client) {
     },
   });
   return `<div class="page-h"><div><h1>Διαιτολόγια</h1></div><button type="button" class="primary" data-act="new-plan">Νέο για ${esc(client.name)}</button></div>${tabs(client.id, 'plans')}
-  <div class="card">${list.length ? list.map(p => `<div class="list-row"><div><a href="#/plan/${esc(p.id)}"><b>${esc(p.title)}</b></a><div class="muted">${p.targetKcal ? esc(p.targetKcal) + ' kcal · ' : ''}${p.visibleToClient ? 'ορατό στην πύλη · ' : ''}${esc(elDate(p.updatedAt.slice(0, 10)))}</div></div><a class="btn sm" href="/print.html?id=${esc(p.id)}" target="_blank" rel="noopener">Εκτύπωση</a></div>`).join('') : emptyState('Κανένα διαιτολόγιο', 'Δημιουργήστε εβδομάδα και συνδέστε τον στόχο από την καρτέλα Ενέργεια.', 'Νέο διαιτολόγιο', 'new-plan')}</div>`;
+  <div class="card">${list.length ? list.map(p => `<div class="list-row"><div><a href="#/plan/${esc(p.id)}"><b>${esc(p.title)}</b></a><div class="muted">${p.macroSummary ? esc(p.macroSummary) + ' · ' : (p.targetKcal ? esc(p.targetKcal) + ' kcal · ' : '')}${p.visibleToClient ? 'ορατό στην πύλη · ' : ''}${esc(elDate(p.updatedAt.slice(0, 10)))}</div></div><a class="btn sm" href="/print.html?id=${esc(p.id)}" target="_blank" rel="noopener">Εκτύπωση</a></div>`).join('') : emptyState('Κανένα διαιτολόγιο', 'Δημιουργήστε εβδομάδα και συνδέστε τον στόχο από την καρτέλα Ενέργεια.', 'Νέο διαιτολόγιο', 'new-plan')}</div>`;
 }
 
 async function diary(client) {

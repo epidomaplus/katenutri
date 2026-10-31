@@ -1,4 +1,5 @@
 import { r1 } from './text.js';
+import { canonicalizePrescription, emptyMacroTargets } from './prescription.js';
 
 export const DAYS = ['Δευτέρα', 'Τρίτη', 'Τετάρτη', 'Πέμπτη', 'Παρασκευή', 'Σάββατο', 'Κυριακή'];
 export const DEFAULT_MEALS = ['Πρωινό', 'Ενδιάμεσο', 'Μεσημεριανό', 'Απογευματινό', 'Βραδινό'];
@@ -155,7 +156,7 @@ export function emptyPlan() {
     notes: '',
     startDate: '',
     targetKcal: '',
-    macroTargets: { protein: '', carbs: '', fat: '' },
+    macroTargets: emptyMacroTargets(),
     exchangeTargets: emptyExchangeTargets(),
     viewMode: 'both',
   };
@@ -180,7 +181,7 @@ export function normalizePlan(data) {
     notes: String(data.notes || '').slice(0, 4000),
     startDate: /^\d{4}-\d{2}-\d{2}$/.test(data.startDate || '') ? data.startDate : '',
     targetKcal: data.targetKcal === 0 || data.targetKcal ? String(data.targetKcal).slice(0, 8) : '',
-    macroTargets: { protein: '', carbs: '', fat: '', ...(data.macroTargets || {}) },
+    macroTargets: { ...emptyMacroTargets(), ...(data.macroTargets || {}) },
     exchangeTargets: { ...emptyExchangeTargets(), ...(data.exchangeTargets || {}) },
     viewMode: mode,
   };
@@ -214,7 +215,7 @@ export function scalePlanData(data, targetKcal) {
     }
   }
   plan.targetKcal = String(Math.round(target));
-  return plan;
+  return canonicalizePrescription(plan);
 }
 
 export function shoppingList(data) {

@@ -99,6 +99,13 @@ try {
   data.viewMode = 'both';
   const plan = await api('/api/plans', { method: 'POST', body: { title: 'Τεστ', clientId: client.id, visibleToClient: true, data } });
   assert(plan.data.days[0].meals[0].length === 2, 'foods on plan');
+  const rx = await api('/api/plans', { method: 'POST', body: { title: 'Εντολή 1800', clientId: client.id, data: { targetKcal: 1800, macroTargets: { proteinPct: 30, carbsPct: 40, fatPct: 30 } } } });
+  assert(rx.data.targetKcal === '1800', 'rx kcal ' + rx.data.targetKcal);
+  assert(rx.data.macroTargets.protein === '135', 'rx protein ' + rx.data.macroTargets.protein);
+  assert(rx.data.macroTargets.carbs === '180', 'rx carbs ' + rx.data.macroTargets.carbs);
+  assert(rx.data.macroTargets.fat === '60', 'rx fat ' + rx.data.macroTargets.fat);
+  const rxAgain = await api('/api/plans/' + rx.id);
+  assert(rxAgain.data.macroTargets.proteinPct === '30' && rxAgain.data.macroTargets.fat === '60', 'rx persisted');
   const scaled = scalePlanData(plan.data, 3400);
   assert(scaled.days[0].meals[0][0].grams > 40, 'scaled grams');
   const shop = shoppingList(plan.data);

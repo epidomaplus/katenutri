@@ -1,5 +1,6 @@
 import { esc, fmt, gramsLabel, elDate } from '/shared/text.js';
 import { normalizePlan, dayNut, dayEx, sumNut, sumEx, shoppingList, MICRO_REF, macroSplit, EXCHANGE_DISCLAIMER, shiftDate, presentRecipe } from '/shared/nutrition.js';
+import { prescriptionSummary } from '/shared/prescription.js';
 import { sheetSections } from '/shared/measures.js';
 import { lineChart } from '/shared/chart.js';
 import { exText } from '/js/format.js';
@@ -88,7 +89,9 @@ function planArticle(plan, onlyDay) {
     const micros = MICRO_REF.map(m => `<tr><td>${esc(m.label)}</td><td>${fmt(nut[m.key] || 0, 1)} ${esc(m.unit)}</td><td>${Math.round((nut[m.key] || 0) / m.ref * 100)}%</td></tr>`).join('');
     summary += `<h3>Μικροθρεπτικά (προσέγγιση)</h3><table><tr><th></th><th>Ποσότητα</th><th>% ενδεικτικού</th></tr>${micros}</table>`;
   }
+  const rx = prescriptionSummary(data);
   return `${header(brand, plan.title, `${plan.clientName || ''}${data.targetKcal ? ' · στόχος ' + data.targetKcal + ' kcal' : ''}`)}
+    ${rx ? `<p><b>Εντολή ημέρας:</b> ${esc(rx)}</p>` : ''}
     ${blocks}${summary}${data.notes ? `<h3>Οδηγίες</h3><p style="white-space:pre-wrap">${esc(data.notes)}</p>` : ''}`;
 }
 

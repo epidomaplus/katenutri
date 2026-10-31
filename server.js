@@ -9,6 +9,7 @@ import { hashPw, checkPw, setSession, clearSession, currentUser, publicUser, aut
 import { clientInput, visitInput, planData, foodInput, str, text, optNum, flag, reqEmail, httpUrl } from './lib/validate.js';
 import { applyDerived } from './shared/measures.js';
 import { exchangeGramsFor, groupLabel, GROUP_IDS, presentRecipe as recipeMath } from './shared/nutrition.js';
+import { prescriptionSummary } from './shared/prescription.js';
 import { norm } from './shared/text.js';
 import { BUILTIN_TEMPLATES } from './lib/templates.js';
 import { seedDemo } from './lib/demo.js';
@@ -49,7 +50,12 @@ function clientSummary(c) {
 }
 function planMeta(p) {
   const { data, ...meta } = p;
-  return { ...meta, targetKcal: data?.targetKcal || '', viewMode: data?.viewMode || 'both' };
+  return {
+    ...meta,
+    targetKcal: data?.targetKcal || '',
+    macroSummary: data ? prescriptionSummary(data) : '',
+    viewMode: data?.viewMode || 'both',
+  };
 }
 function presentRecipe(r) {
   const m = recipeMath(r);
