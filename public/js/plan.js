@@ -5,6 +5,10 @@ import {
   GROUPS, normalizePlan, dayNut, dayEx, sumNut, sumEx, itemFromFood, itemFromRecipe,
   scalePlanData, shoppingList, macroSplit, MICRO_REF, EXCHANGE_DISCLAIMER, groupShort, emptyPlan, shiftDate,
 } from '/shared/nutrition.js';
+import {
+  applyPrescriptionEdit, alignMacroFromPercent, describePrescription, prescriptionReady,
+  formatMacro, prescriptionSummary, hydratePrescription,
+} from '/shared/prescription.js';
 import { exText, macroBar } from './format.js';
 import { openFoodPicker, openRecipePicker } from './picker.js';
 
@@ -14,15 +18,25 @@ let linked = null;
 let day = 0;
 let panel = 'day';
 let timer = null;
+let newDraft = null;
 
 function bind(h) { setHandlers(h); bus.handlers = h; }
 
 export async function plansPage() {
   const [plans, cls] = await Promise.all([api('/api/plans'), api('/api/clients')]);
+  newDraft = emptyPlan();
   bind({
+    ...rxHandlers('new', () => newDraft),
     'new-plan': async (data) => {
+      readRxInto('new', newDraft);
+      const check = prescriptionReady(newDraft);
+      const st = document.getElementById('new-status');
+      if (!check.ok) {
+        if (st) { st.className = 'err'; st.textContent = check.errors.join(' '); }
+        return;
+      }
       const client = cls.find(c => c.id === data.clientId);
-      const p = await api('/api/plans', { method: 'POST', body: { ...data, clientName: client?.name || data.clientName || '', data: emptyPlan() } });
+      const p = await api('/api/plans', { method: 'POST', body: { title: data.title, clientId: data.clientId || '', clientName: client?.name || '', data: newDraft } });
       location.hash = '/plan/' + p.id;
     },
     'dup': async (el) => {
@@ -36,14 +50,19 @@ export async function plansPage() {
       bus.refresh();
     },
   });
+  const goal = (p) => p.macroSummary || (p.targetKcal ? p.targetKcal + ' kcal' : '');
   return `<div class="page-h"><div><h1>Διαιτολόγια</h1><p class="muted">Εβδομάδα με γεύματα, μακροθρεπτικά και ισοδύναμα.</p></div></div>
-  <form class="card" data-submit="new-plan"><div class="grid-3"><div><label class="lbl">Τίτλος</label><input name="title" required placeholder="Εβδομάδα 1"></div><div><label class="lbl">Πελάτης</label><select name="clientId"><option value="">— χωρίς σύνδεση —</option>${cls.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div><div><button class="primary" type="submit">Δημιουργία</button></div></div></form>
-  <div class="card">${plans.length ? plans.map(p => `<div class="list-row"><div><a href="#/plan/${esc(p.id)}"><b>${esc(p.title)}</b></a><div class="muted">${esc(p.clientName || 'Χωρίς πελάτη')}${p.targetKcal ? ' · ' + esc(p.targetKcal) + ' kcal' : ''}${p.visibleToClient ? ' · ορατό στην πύλη' : ''} · ${esc(elDate(p.updatedAt.slice(0, 10)))}</div></div><div class="actions"><a class="btn sm" href="/print.html?id=${esc(p.id)}" target="_blank" rel="noopener">Εκτύπωση</a><button type="button" class="sm" data-act="dup" data-id="${esc(p.id)}">Αντίγραφο</button><button type="button" class="sm danger" data-act="del-plan" data-id="${esc(p.id)}">Διαγραφή</button></div></div>`).join('') : emptyState('Κανένα διαιτολόγιο', 'Φτιάξτε το πρώτο από τη φόρμα πάνω ή από την καρτέλα πελάτη.', '', '')}</div>`;
+  <form class="card" data-submit="new-plan"><h2>Νέο διαιτολόγιο</h2><div class="grid-3"><div><label class="lbl">Τίτλος</label><input name="title" required placeholder="Εβδομάδα 1"></div><div><label class="lbl">Πελάτης</label><select name="clientId"><option value="">— χωρίς σύνδεση —</option>${cls.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div></div>
+    <h3 style="margin:14px 0 8px">Εντολή διαιτολογίου</h3>
+    ${rxFields('new', newDraft)}
+    <div class="actions" style="margin-top:10px"><button class="primary" type="submit">Δημιουργία</button></div></form>
+  <div class="card">${plans.length ? plans.map(p => `<div class="list-row"><div><a href="#/plan/${esc(p.id)}"><b>${esc(p.title)}</b></a><div class="muted">${esc(p.clientName || 'Χωρίς πελάτη')}${goal(p) ? ' · ' + esc(goal(p)) : ''}${p.visibleToClient ? ' · ορατό στην πύλη' : ''} · ${esc(elDate(p.updatedAt.slice(0, 10)))}</div></div><div class="actions"><a class="btn sm" href="/print.html?id=${esc(p.id)}" target="_blank" rel="noopener">Εκτύπωση</a><button type="button" class="sm" data-act="dup" data-id="${esc(p.id)}">Αντίγραφο</button><button type="button" class="sm danger" data-act="del-plan" data-id="${esc(p.id)}">Διαγραφή</button></div></div>`).join('') : emptyState('Κανένα διαιτολόγιο', 'Φτιάξτε το πρώτο από τη φόρμα πάνω ή από την καρτέλα πελάτη.', '', '')}</div>`;
 }
 
 export async function planEditor(id) {
   plan = await api('/api/plans/' + id);
   plan.data = normalizePlan(plan.data);
+  hydratePrescription(plan.data);
   clients = await api('/api/clients');
   linked = clients.find(c => c.id === plan.clientId) || null;
   day = 0; panel = 'day';
@@ -86,6 +105,7 @@ function syncMeals() {
 
 function handlers() {
   return {
+    ...rxHandlers('rx', () => plan.data),
     'title': (el) => { plan.title = el.value; schedule(); },
     'client': (el) => {
       plan.clientId = el.value;
@@ -93,7 +113,6 @@ function handlers() {
       if (linked) plan.clientName = linked.name;
       schedule(); render();
     },
-    'kcal': (el) => { plan.data.targetKcal = el.value; schedule(); },
     'start': (el) => { plan.data.startDate = el.value; schedule(); },
     'notes': (el) => { plan.data.notes = el.value; schedule(); },
     'day-note': (el) => { plan.data.days[day].note = el.value; schedule(); },
@@ -140,13 +159,165 @@ function handlers() {
   };
 }
 
+function rxFields(prefix, data) {
+  const mt = data.macroTargets || {};
+  const status = statusBlock(data);
+  const row = (label, toneName, key) => `<span class="rx-name ${toneName}">${label}</span>
+    <input id="${prefix}-pct-${key}" name="${key}Pct" data-input="${prefix}-pct-${key}" data-change="${prefix}-pct-${key}-commit" type="number" min="0" max="100" step="any" inputmode="decimal" value="${esc(mt[key + 'Pct'] ?? '')}" aria-label="${label} τοις εκατό">
+    <input id="${prefix}-g-${key}" name="${key}" data-input="${prefix}-g-${key}" data-change="${prefix}-g-${key}-commit" type="number" min="0" max="1500" step="any" inputmode="decimal" value="${esc(mt[key] ?? '')}" aria-label="${label} γραμμάρια">`;
+  return `<div class="rx" id="${prefix}-box">
+    <div class="rx-kcal"><label class="lbl" for="${prefix}-kcal">Ημερήσιες θερμίδες (kcal)</label>
+      <input id="${prefix}-kcal" name="targetKcal" data-input="${prefix}-kcal" type="number" min="0" max="10000" step="any" inputmode="decimal" value="${esc(data.targetKcal || '')}"></div>
+    <div class="rx-grid">
+      <span></span><span class="rx-h">Ποσοστό %</span><span class="rx-h">Γραμμάρια</span>
+      ${row('Πρωτεΐνη', 'p', 'protein')}
+      ${row('Υδατάνθρακες', 'c', 'carbs')}
+      ${row('Λίπος', 'f', 'fat')}
+    </div>
+    <p class="muted">Πρωτεΐνη και υδατάνθρακες 4 kcal/g, λίπος 9 kcal/g. Τα ποσοστά πρέπει να αθροίζουν 100%. Αλλαγή των kcal ξαναϋπολογίζει τα γραμμάρια από τα ποσοστά.</p>
+    <p id="${prefix}-status" class="${status.cls}">${esc(status.text)}</p>
+  </div>`;
+}
+function statusBlock(data) {
+  const d = describePrescription(data);
+  if (d.empty) return { cls: 'muted', text: 'Προαιρετική εντολή ημέρας. Χωρίς αυτήν, τα γεύματα δείχνουν μόνο τα σύνολα.' };
+  if (d.errors.length) return { cls: 'err', text: d.errors.join(' ') };
+  const bits = [];
+  if (d.kcal) bits.push(`${formatMacro(d.kcal)} kcal`);
+  for (const [k, label] of [['protein', 'Π'], ['carbs', 'Υ'], ['fat', 'Λ']]) {
+    if (d.grams[k] == null && d.percents[k] == null) continue;
+    const g = d.grams[k] == null ? '' : `${formatMacro(d.grams[k])} g`;
+    const p = d.percents[k] == null ? '' : `${formatMacro(d.percents[k])}%`;
+    bits.push([label, g, p].filter(Boolean).join(' '));
+  }
+  if (d.sum != null) bits.push(`άθροισμα ${formatMacro(d.sum)}%`);
+  else if (d.pctFilled > 0 && d.pctFilled < 3) bits.push('συμπληρώστε και τα τρία ποσοστά');
+  if (d.macroKcal && d.complete) bits.push(`${formatMacro(d.macroKcal.total)} kcal από τα μακροθρεπτικά`);
+  return { cls: d.complete ? 'ok' : 'muted', text: bits.join(' · ') };
+}
+function writeRx(prefix, data, force = false) {
+  const mt = data.macroTargets || {};
+  const set = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!force && el === document.activeElement) return;
+    const next = val ?? '';
+    if (el.value !== next) el.value = next;
+  };
+  set(`${prefix}-kcal`, data.targetKcal || '');
+  for (const m of ['protein', 'carbs', 'fat']) {
+    set(`${prefix}-pct-${m}`, mt[m + 'Pct'] ?? '');
+    set(`${prefix}-g-${m}`, mt[m] ?? '');
+  }
+  const st = document.getElementById(`${prefix}-status`);
+  if (st) {
+    const s = statusBlock(data);
+    st.className = s.cls;
+    st.textContent = s.text;
+  }
+}
+function readRxInto(prefix, data) {
+  const val = (id) => document.getElementById(id)?.value ?? '';
+  data.targetKcal = val(`${prefix}-kcal`);
+  data.macroTargets = data.macroTargets || {};
+  for (const m of ['protein', 'carbs', 'fat']) {
+    data.macroTargets[m + 'Pct'] = val(`${prefix}-pct-${m}`);
+    data.macroTargets[m] = val(`${prefix}-g-${m}`);
+  }
+}
+function rxHandlers(prefix, getData) {
+  const sync = (field, raw) => {
+    applyPrescriptionEdit(getData(), field, raw);
+    writeRx(prefix, getData());
+    if (prefix === 'rx') { paintCompare(); schedule(); }
+  };
+  const commit = (macro) => {
+    alignMacroFromPercent(getData(), macro);
+    writeRx(prefix, getData(), true);
+    if (prefix === 'rx') { paintCompare(); schedule(); }
+  };
+  const h = { [`${prefix}-kcal`]: (el) => sync('kcal', el.value) };
+  for (const m of ['protein', 'carbs', 'fat']) {
+    h[`${prefix}-pct-${m}`] = (el) => sync(m + 'Pct', el.value);
+    h[`${prefix}-g-${m}`] = (el) => sync(m, el.value);
+    h[`${prefix}-pct-${m}-commit`] = () => commit(m);
+    h[`${prefix}-g-${m}-commit`] = () => commit(m);
+  }
+  return h;
+}
+function paintCompare() {
+  const host = document.getElementById('macro-compare');
+  if (host && (panel === 'day' || panel === 'analysis')) host.innerHTML = compareInner(dayNut(plan.data.days[day]));
+  const week = document.getElementById('week-rx');
+  if (week) {
+    const rx = prescriptionSummary(plan.data);
+    week.textContent = rx ? 'Εντολή ημέρας: ' + rx : '';
+  }
+  document.querySelectorAll('[data-act="day"]').forEach((btn) => {
+    const span = btn.querySelector('span');
+    const i = Number(btn.dataset.day);
+    const dayData = plan.data.days[i];
+    if (!span || !dayData) return;
+    const k = dayNut(dayData).kcal;
+    span.className = tone(k, plan.data.targetKcal) || 'muted';
+    span.textContent = fmt(k, 0);
+  });
+}
+function targetBar(mt) {
+  if (!mt || mt.proteinPct === '' || mt.carbsPct === '' || mt.fatPct === '' || mt.proteinPct == null) return '';
+  const pp = Number(mt.proteinPct);
+  const cp = Number(mt.carbsPct);
+  const fp = Number(mt.fatPct);
+  if (![pp, cp, fp].every(n => Number.isFinite(n))) return '';
+  return `<div class="bar" title="Εντολή"><i style="width:${pp}%"></i><i style="width:${cp}%"></i><i style="width:${fp}%"></i></div>`;
+}
+function deltaBit(actual, target, digits, unit) {
+  if (target === '' || target == null || !Number.isFinite(Number(target))) return null;
+  const dlt = actual - Number(target);
+  const sign = dlt > 0.049 ? '+' : '';
+  return { text: `${sign}${fmt(dlt, digits)} ${unit}`, cls: tone(actual, target) };
+}
+function compareInner(nut) {
+  const d = plan.data;
+  const mt = d.macroTargets || {};
+  if (!d.targetKcal && !mt.protein && !mt.carbs && !mt.fat) return '';
+  const s = macroSplit(nut);
+  const goal = (g, pct) => {
+    const bits = [];
+    if (g !== '' && g != null) bits.push(`${esc(g)} g`);
+    if (pct !== '' && pct != null) bits.push(`${esc(pct)}%`);
+    return bits.join(' · ') || '—';
+  };
+  const diffCell = (parts) => {
+    const bits = parts.filter(Boolean);
+    if (!bits.length) return { text: '—', cls: '' };
+    return { text: bits.map(b => b.text).join(' · '), cls: bits[0].cls };
+  };
+  const kcal = deltaBit(nut.kcal, d.targetKcal, 0, 'kcal');
+  const protein = diffCell([deltaBit(nut.protein, mt.protein, 1, 'g'), deltaBit(s.pp, mt.proteinPct, 0, '%')]);
+  const carbs = diffCell([deltaBit(nut.carbs, mt.carbs, 1, 'g'), deltaBit(s.cp, mt.carbsPct, 0, '%')]);
+  const fat = diffCell([deltaBit(nut.fat, mt.fat, 1, 'g'), deltaBit(s.fp, mt.fatPct, 0, '%')]);
+  const hasSplit = mt.proteinPct !== '' && mt.carbsPct !== '' && mt.fatPct !== '' && mt.proteinPct != null;
+  const note = hasSplit ? `<p class="muted">Πάνω: κατανομή της ημέρας. Κάτω: εντολή ${esc(mt.proteinPct)}% Π · ${esc(mt.carbsPct)}% Υ · ${esc(mt.fatPct)}% Λ.</p>` : '';
+  const row = (label, color, targetText, actualText, diff) => `<tr><td${color ? ` style="color:${color}"` : ''}>${label}</td><td class="num">${targetText}</td><td class="num">${actualText}</td><td class="num ${diff.cls}">${diff.text}</td></tr>`;
+  return `${targetBar(mt)}${note}<div class="table-wrap" style="margin-top:10px"><table><tr><th>Σύγκριση με την εντολή</th><th class="num">Εντολή</th><th class="num">Ημέρα</th><th class="num">Διαφορά</th></tr>
+    ${row('Θερμίδες', '', d.targetKcal ? esc(d.targetKcal) + ' kcal' : '—', fmt(nut.kcal, 0) + ' kcal', kcal || { text: '—', cls: '' })}
+    ${row('Πρωτεΐνη', 'var(--p)', goal(mt.protein, mt.proteinPct), `${fmt(nut.protein, 1)} g · ${fmt(s.pp, 0)}%`, protein)}
+    ${row('Υδατάνθρακες', 'var(--c)', goal(mt.carbs, mt.carbsPct), `${fmt(nut.carbs, 1)} g · ${fmt(s.cp, 0)}%`, carbs)}
+    ${row('Λίπος', 'var(--f)', goal(mt.fat, mt.fatPct), `${fmt(nut.fat, 1)} g · ${fmt(s.fp, 0)}%`, fat)}
+  </table></div>`;
+}
 function view() {
   const d = plan.data;
   const mode = d.viewMode || 'both';
   const showM = mode !== 'exchanges';
   const showE = mode !== 'macros';
   const dateHint = d.startDate ? elDate(shiftDate(d.startDate, day)) : '';
-  const tabs = d.days.map((x, i) => `<button type="button" class="${panel === 'day' && day === i ? 'on' : ''}" data-act="day" data-day="${i}">${esc(x.name)} <span class="muted">${fmt(dayNut(x).kcal, 0)}</span></button>`).join('');
+  const tabs = d.days.map((x, i) => {
+    const k = dayNut(x).kcal;
+    const mark = tone(k, d.targetKcal);
+    return `<button type="button" class="${panel === 'day' && day === i ? 'on' : ''}" data-act="day" data-day="${i}">${esc(x.name)} <span class="${mark || 'muted'}">${fmt(k, 0)}</span></button>`;
+  }).join('');
   let body = '';
   if (panel === 'week') body = weekHtml();
   else if (panel === 'analysis') body = analysisHtml(d.days[day], dateHint);
@@ -155,11 +326,12 @@ function view() {
   const flags = linked?.preferences || {};
   const flagTxt = [flags.vegan && 'vegan', flags.fasting && 'νηστεία', flags.keto && 'keto', flags.carbLoading && 'φόρτιση υδατανθράκων'].filter(Boolean).join(', ');
   return `<div class="page-h"><div><h1>Διαιτολόγιο</h1><p class="muted" id="saveState">Αποθηκεύτηκε</p></div><div class="actions"><a class="btn" href="#/plans">Λίστα</a><a class="btn primary" href="/print.html?id=${esc(plan.id)}" target="_blank" rel="noopener">Εκτύπωση</a></div></div>
-  <div class="card"><div class="grid-3"><div><label class="lbl">Τίτλος</label><input data-input="title" value="${esc(plan.title)}"></div><div><label class="lbl">Πελάτης</label><select data-change="client"><option value="">—</option>${clients.map(c => `<option value="${esc(c.id)}" ${c.id === plan.clientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div><div><label class="lbl">Στόχος kcal</label><input data-input="kcal" type="number" value="${esc(d.targetKcal || '')}"></div><div><label class="lbl">Έναρξη (Δευτέρα)</label><input data-change="start" type="date" value="${esc(d.startDate || '')}"></div></div>
+  <div class="card"><div class="grid-3"><div><label class="lbl">Τίτλος</label><input data-input="title" value="${esc(plan.title)}"></div><div><label class="lbl">Πελάτης</label><select data-change="client"><option value="">—</option>${clients.map(c => `<option value="${esc(c.id)}" ${c.id === plan.clientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div><div><label class="lbl">Έναρξη (Δευτέρα)</label><input data-change="start" type="date" value="${esc(d.startDate || '')}"></div></div>
     <div class="actions" style="margin-top:10px"><div class="seg"><button type="button" data-act="mode" data-mode="macros" class="${mode === 'macros' ? 'on' : ''}">Μακροθρεπτικά</button><button type="button" data-act="mode" data-mode="exchanges" class="${mode === 'exchanges' ? 'on' : ''}">Ισοδύναμα</button><button type="button" data-act="mode" data-mode="both" class="${mode === 'both' ? 'on' : ''}">Και τα δύο</button></div>
       <label class="checkline"><input type="checkbox" data-change="visible" ${plan.visibleToClient ? 'checked' : ''}> Ορατό στην πύλη</label></div>
     <div class="actions" style="margin-top:8px"><button type="button" class="sm" data-act="meals">Γεύματα</button><button type="button" class="sm" data-act="targets">Στόχοι ισοδυνάμων</button><button type="button" class="sm" data-act="templates">Πρότυπα</button><button type="button" class="sm" data-act="scale">Κλιμάκωση</button><button type="button" class="sm" data-act="shop">Λίστα αγορών</button></div>
   </div>
+  <div class="card" id="prescription"><h2>Εντολή διαιτολογίου</h2><p class="muted">Ημερήσιος στόχος του πλάνου. Τα σύνολα κάθε ημέρας συγκρίνονται με αυτήν.</p>${rxFields('rx', d)}</div>
   ${allergy}${flagTxt ? `<p class="muted">Σημάνσεις πελάτη: ${esc(flagTxt)}. Εφαρμόζονται ως ήπια φίλτρα όταν προσθέτετε τρόφιμο.</p>` : ''}
   <div class="tabs">${tabs}<button type="button" class="${panel === 'week' ? 'on' : ''}" data-act="panel" data-panel="week">Εβδομάδα</button><button type="button" class="${panel === 'analysis' ? 'on' : ''}" data-act="panel" data-panel="analysis">Ανάλυση ημέρας</button></div>
   ${body}
@@ -168,9 +340,8 @@ function view() {
 
 function totals(nut, ex, label) {
   const s = macroSplit(nut);
-  const mt = plan.data.macroTargets || {};
   const mode = plan.data.viewMode || 'both';
-  return `<div class="card"><h3>${esc(label)}</h3><div class="totals" style="margin-top:8px"><div><b>${fmt(nut.kcal, 0)}</b>kcal${plan.data.targetKcal ? `<div class="muted">στόχος ${esc(plan.data.targetKcal)}</div>` : ''}</div><div><b style="color:var(--p)">${fmt(nut.protein, 1)} g</b>Πρωτεΐνη${mt.protein ? `<div class="muted">στόχος ${esc(mt.protein)} g</div>` : ''}</div><div><b style="color:var(--c)">${fmt(nut.carbs, 1)} g</b>Υδατάνθρακες${mt.carbs ? `<div class="muted">στόχος ${esc(mt.carbs)} g</div>` : ''}</div><div><b style="color:var(--f)">${fmt(nut.fat, 1)} g</b>Λίπος${mt.fat ? `<div class="muted">στόχος ${esc(mt.fat)} g</div>` : ''}</div></div>${macroBar(nut)}<p class="muted">${fmt(s.pp, 0)}% Π · ${fmt(s.cp, 0)}% Υ · ${fmt(s.fp, 0)}% Λ</p>${mode !== 'macros' ? targetCards(ex) : ''}</div>`;
+  return `<div class="card"><h3>${esc(label)}</h3><div class="totals" style="margin-top:8px"><div><b>${fmt(nut.kcal, 0)}</b>kcal</div><div><b style="color:var(--p)">${fmt(nut.protein, 1)} g</b>Πρωτεΐνη</div><div><b style="color:var(--c)">${fmt(nut.carbs, 1)} g</b>Υδατάνθρακες</div><div><b style="color:var(--f)">${fmt(nut.fat, 1)} g</b>Λίπος</div></div>${macroBar(nut)}<p class="muted">${fmt(s.pp, 0)}% Π · ${fmt(s.cp, 0)}% Υ · ${fmt(s.fp, 0)}% Λ</p><div id="macro-compare">${compareInner(nut)}</div>${mode !== 'macros' ? targetCards(ex) : ''}</div>`;
 }
 function tone(actual, target) {
   if (target === '' || target == null) return '';
@@ -209,14 +380,16 @@ function dayHtml(showM, showE, dateHint) {
   return `${head}${meals}<div class="card"><label class="lbl">Σημείωση ημέρας</label><input data-input="day-note" value="${esc(d.note || '')}"><div class="actions" style="margin-top:8px"><select id="copyTo"><option value="all">Αντιγραφή σε όλες τις άλλες</option>${plan.data.days.map((x, i) => i !== day ? `<option value="${i}">${esc(x.name)}</option>` : '').join('')}</select><button type="button" data-act="copy-day">Αντιγραφή ημέρας</button><button type="button" class="danger" data-act="clear-day">Καθαρισμός</button></div></div>`;
 }
 function weekHtml() {
+  const mt = plan.data.macroTargets || {};
   const rows = plan.data.days.map(d => {
     const n = dayNut(d); const ex = dayEx(d);
-    return `<tr><td>${esc(d.name)}</td><td class="num">${fmt(n.kcal, 0)}</td><td class="num hm">${fmt(n.protein, 1)}</td><td class="num hm">${fmt(n.carbs, 1)}</td><td class="num hm">${fmt(n.fat, 1)}</td><td class="num">${fmt(ex.carb, 1)}</td><td>${esc(exText(ex))}</td></tr>`;
+    return `<tr><td>${esc(d.name)}</td><td class="num ${tone(n.kcal, plan.data.targetKcal)}">${fmt(n.kcal, 0)}</td><td class="num hm ${tone(n.protein, mt.protein)}">${fmt(n.protein, 1)}</td><td class="num hm ${tone(n.carbs, mt.carbs)}">${fmt(n.carbs, 1)}</td><td class="num hm ${tone(n.fat, mt.fat)}">${fmt(n.fat, 1)}</td><td class="num">${fmt(ex.carb, 1)}</td><td>${esc(exText(ex))}</td></tr>`;
   }).join('');
   const allItems = plan.data.days.flatMap(d => d.meals.flat());
   const n = sumNut(allItems); const ex = sumEx(allItems);
   const filled = plan.data.days.filter(d => dayNut(d).kcal > 0).length || 1;
-  return `<div class="card"><h2>Εβδομάδα</h2><p class="muted">Μέσος όρος συμπληρωμένης ημέρας: ${fmt(n.kcal / filled, 0)} kcal · ${fmt(ex.carb / filled, 1)} ισοδ. υδατανθράκων.</p><div class="table-wrap"><table><tr><th>Ημέρα</th><th class="num">kcal</th><th class="num hm">Π</th><th class="num hm">Υ</th><th class="num hm">Λ</th><th class="num">Υδατ.</th><th>Ισοδύναμα</th></tr>${rows}</table></div></div>`;
+  const rx = prescriptionSummary(plan.data);
+  return `<div class="card"><h2>Εβδομάδα</h2><p class="muted">Μέσος όρος συμπληρωμένης ημέρας: ${fmt(n.kcal / filled, 0)} kcal · ${fmt(ex.carb / filled, 1)} ισοδ. υδατανθράκων.</p><p id="week-rx" class="muted">${rx ? 'Εντολή ημέρας: ' + esc(rx) : ''}</p><div class="table-wrap"><table><tr><th>Ημέρα</th><th class="num">kcal</th><th class="num hm">Π</th><th class="num hm">Υ</th><th class="num hm">Λ</th><th class="num">Υδατ.</th><th>Ισοδύναμα</th></tr>${rows}</table></div></div>`;
 }
 function analysisHtml(d, dateHint) {
   const nut = dayNut(d); const ex = dayEx(d);
@@ -270,7 +443,7 @@ async function templateModal() {
     <h3>Αποθήκευση αυτού ως πρότυπο</h3><div class="actions"><input id="tn" placeholder="Όνομα"><button type="button" id="save">Αποθήκευση</button></div>`, { wide: true });
   m.el.querySelectorAll('[data-id]').forEach(b => b.onclick = () => {
     const t = tpls.find(x => x.id === b.dataset.id);
-    if (!confirm('Θα αντικατασταθούν οι ημέρες. Οι στόχοι kcal μένουν.')) return;
+    if (!confirm('Θα αντικατασταθούν οι ημέρες. Η εντολή (kcal και μακροθρεπτικά) μένει.')) return;
     const target = plan.data.targetKcal;
     const next = normalizePlan(t.data);
     next.targetKcal = target || next.targetKcal;
