@@ -190,6 +190,10 @@ tr.tot td { font-weight: 750; border-bottom: 0; }
 details.fold { border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; margin-bottom: 8px; background: var(--bg); }
 details.fold summary { cursor: pointer; font-weight: 700; }
 .g { width: 76px; text-align: right; }
+td.portion { min-width: 132px; }
+td.portion select, td.portion input { width: 100%; min-width: 112px; margin: 0 0 4px; }
+.meal-notes { margin-top: 8px; }
+.meal-notes textarea { min-height: 52px; }
 .hamb { display: none; }
 .scrim { display: none; }
 .disclaimer { color: var(--muted); font-size: 12px; margin-top: 18px; }

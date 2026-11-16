@@ -1,7 +1,10 @@
-import { loadFoods, api } from './api.js';
+import { loadFoods, api, invalidateFoods } from './api.js';
 import { modal, esc } from './util.js';
 import { norm, fmt } from '/shared/text.js';
-import { GROUPS, groupShort, portionCarbEx, portionGroupEx } from '/shared/nutrition.js';
+import {
+  GROUPS, groupShort, portionCarbEx, portionGroupEx, PORTION_UNITS, perUnitLabel,
+  resolvePortion, resolveMissingGrams,
+} from '/shared/nutrition.js';
 
 export function openFoodPicker({ title = 'Προσθήκη τροφίμου', preferences, onPick }) {
   const flags = { vegan: !!preferences?.vegan, fasting: !!preferences?.fasting, keto: !!preferences?.keto };
@@ -20,10 +23,14 @@ export function openFoodPicker({ title = 'Προσθήκη τροφίμου', pr
       <button type="button" class="sm" data-flag="keto">Keto</button>
       <select id="group"><option value="">Όλες οι ομάδες</option>${GROUPS.map(g => `<option value="${g.id}">${esc(g.label)}</option>`).join('')}</select>
     </div>
-    <div class="grid-2" style="margin-top:8px">
-      <div><label class="lbl">Ποσότητα (g)</label><input id="grams" type="number" min="0" step="5" placeholder="τυπική μερίδα"></div>
-      <div><label class="lbl">Σημείωση</label><input id="note" placeholder="π.χ. 1 φέτα"></div>
+    <div class="grid-3" id="portion-fields" style="margin-top:8px">
+      <div><label class="lbl">Μονάδα</label><select id="unit" required>${PORTION_UNITS.map(u => `<option value="${u.id}">${esc(u.label)}</option>`).join('')}</select></div>
+      <div><label class="lbl" id="qty-lbl">Ποσότητα (g)</label><input id="qty" type="number" min="0" step="5" inputmode="decimal" placeholder="τυπική μερίδα"></div>
+      <div id="equiv-wrap"><label class="lbl">Γραμμάρια</label><input id="equiv" type="number" min="0" step="1" inputmode="decimal" placeholder="αυτόματα, αν υπάρχουν"></div>
     </div>
+    <p class="muted" id="portion-hint">Στα τεμάχια και τα φλιτζάνια τα γραμμάρια γεμίζουν από το τρόφιμο. Αν τα γράψετε εσείς, υπερισχύουν.</p>
+    <div><label class="lbl">Σημείωση</label><input id="note" placeholder="π.χ. ώριμο"></div>
+    <p class="err" id="perr"></p>
     <div class="results" id="list"></div>
     <p class="muted">Τιμές ανά 100 g, κατά προσέγγιση. 1 ισοδύναμο υδατανθράκων ≈ 15 g.</p>`);
   m.el.querySelector('#x').onclick = () => m.close();
@@ -44,16 +51,86 @@ export function openFoodPicker({ title = 'Προσθήκη τροφίμου', pr
     m.el.querySelector('#list').innerHTML = list.map(f => {
       const carb = portionCarbEx(f);
       const ge = f.group === 'free' ? '' : `${fmt(portionGroupEx(f), 1)} ${groupShort(f.group)}`;
-      return `<div class="r" data-id="${esc(f.id)}"><div><b>${esc(f.name)}</b><div class="muted">${esc(f.category)} · ${esc(f.portionLabel || '')} (${f.portionGrams} g) · ${esc(groupShort(f.group))}${f.secondaryGroup ? ' + άπαχο' : ''}</div></div><div class="muted" style="text-align:right">${fmt(f.kcal, 0)} kcal<br>${fmt(carb, 1)} υδατ. ${ge ? '· ' + ge : ''}</div></div>`;
+      const rates = [f.gramsPerPiece ? `${fmt(f.gramsPerPiece, 0)} g/τεμ.` : '', f.gramsPerCup ? `${fmt(f.gramsPerCup, 0)} g/φλιτζ.` : ''].filter(Boolean).join(' · ');
+      return `<div class="r" data-id="${esc(f.id)}"><div><b>${esc(f.name)}</b><div class="muted">${esc(f.category)} · ${esc(f.portionLabel || '')} (${f.portionGrams} g) · ${esc(groupShort(f.group))}${f.secondaryGroup ? ' + άπαχο' : ''}${rates ? ' · ' + esc(rates) : ''}</div></div><div class="muted" style="text-align:right">${fmt(f.kcal, 0)} kcal<br>${fmt(carb, 1)} υδατ. ${ge ? '· ' + ge : ''}</div></div>`;
     }).join('') || '<p class="muted">Δεν βρέθηκαν τρόφιμα.</p>';
-    m.el.querySelectorAll('.r').forEach(row => row.onclick = () => {
-      const food = list.find(f => f.id === row.dataset.id);
-      const grams = Number(m.el.querySelector('#grams').value) || food.portionGrams;
-      const note = m.el.querySelector('#note').value || (grams === food.portionGrams ? (food.portionLabel || '') : '');
-      onPick({ food, grams, note });
-      m.close();
-    });
+    m.el.querySelectorAll('.r').forEach(row => row.onclick = () => choose(list.find(f => f.id === row.dataset.id)));
   };
+  const noteOf = (food, grams) => {
+    const typed = m.el.querySelector('#note').value;
+    if (typed) return typed;
+    return grams === food.portionGrams ? (food.portionLabel || '') : '';
+  };
+  const finish = (food, resolved, note) => {
+    onPick({
+      food, grams: resolved.grams, note,
+      unit: resolved.unit, quantity: resolved.quantity,
+      gramsManual: resolved.gramsManual, gramsPerUnit: resolved.gramsPerUnit,
+    });
+    m.close();
+  };
+  const choose = async (food) => {
+    const err = m.el.querySelector('#perr');
+    const unit = m.el.querySelector('#unit').value;
+    const qtyRaw = m.el.querySelector('#qty').value;
+    const gramsText = unit === 'g' ? '' : m.el.querySelector('#equiv').value;
+    const quantity = unit === 'g' ? (qtyRaw === '' ? food.portionGrams : Number(qtyRaw)) : qtyRaw;
+    const resolved = resolvePortion({ unit, quantity, gramsText, food });
+    if (resolved.needsGrams) { askGrams(food, unit, Number(quantity)); return; }
+    if (!resolved.ok) { if (err) err.textContent = resolved.error; return; }
+    if (err) err.textContent = '';
+    finish(food, resolved, noteOf(food, resolved.grams));
+  };
+  const askGrams = (food, unit, quantity) => {
+    const label = perUnitLabel(unit);
+    const word = unit === 'cup' ? 'φλιτζάνια' : 'τεμάχια';
+    const box = modal(`<h2>Γραμμάρια</h2>
+      <p>Το «${esc(food.name)}» δεν έχει ${esc(label.toLocaleLowerCase('el'))}. Οι θερμίδες υπολογίζονται πάντα από γραμμάρια.</p>
+      <label class="lbl">Γραμμάρια για ${esc(String(quantity))} ${esc(word)}</label>
+      <input id="total" type="number" min="0" step="1" inputmode="decimal">
+      <label class="lbl">${esc(label)} — αποθηκεύεται στο τρόφιμο</label>
+      <input id="per" type="number" min="0" step="1" inputmode="decimal">
+      <p class="muted">Συμπληρώστε ένα από τα δύο. Αν συμπληρώσετε και τα δύο, τα γραμμάρια αυτής της γραμμής υπερισχύουν και η τιμή ανά μονάδα μένει στο τρόφιμο για την επόμενη φορά.</p>
+      <p class="err" id="e"></p>
+      <div class="actions"><button type="button" id="cancel">Άκυρο</button><button type="button" class="primary" id="ok">Προσθήκη</button></div>`);
+    box.el.querySelector('#cancel').onclick = () => box.close();
+    box.el.querySelector('#ok').onclick = async () => {
+      const btn = box.el.querySelector('#ok');
+      const e = box.el.querySelector('#e');
+      const decided = resolveMissingGrams({
+        unit, quantity,
+        totalGrams: box.el.querySelector('#total').value,
+        perUnit: box.el.querySelector('#per').value,
+      });
+      if (!decided.ok) { e.textContent = decided.error; return; }
+      btn.disabled = true;
+      try {
+        if (decided.savePerUnit) {
+          const key = unit === 'cup' ? 'gramsPerCup' : 'gramsPerPiece';
+          const saved = await api('/api/foods/' + food.id, { method: 'PUT', body: { ...food, [key]: decided.savePerUnit } });
+          Object.assign(food, saved);
+          invalidateFoods();
+        }
+        box.close();
+        finish(food, decided, noteOf(food, decided.grams));
+      } catch (ex) {
+        e.textContent = ex.message;
+        btn.disabled = false;
+      }
+    };
+  };
+  const syncUnit = () => {
+    const unit = m.el.querySelector('#unit').value;
+    const grams = unit === 'g';
+    m.el.querySelector('#portion-fields').className = grams ? 'grid-2' : 'grid-3';
+    m.el.querySelector('#equiv-wrap').hidden = grams;
+    m.el.querySelector('#qty-lbl').textContent = grams ? 'Ποσότητα (g)' : 'Ποσότητα';
+    const qty = m.el.querySelector('#qty');
+    qty.step = grams ? '5' : unit === 'cup' ? '0.25' : '0.5';
+    qty.placeholder = grams ? 'τυπική μερίδα' : unit === 'cup' ? 'π.χ. 1' : 'π.χ. 2';
+  };
+  m.el.querySelector('#unit').onchange = syncUnit;
+  syncUnit();
   m.el.querySelector('#q').oninput = e => { q = e.target.value; draw(); };
   m.el.querySelector('#group').onchange = e => { group = e.target.value; draw(); };
   m.el.querySelectorAll('[data-flag]').forEach(b => b.onclick = () => { flags[b.dataset.flag] = !flags[b.dataset.flag]; paintFlags(); draw(); });

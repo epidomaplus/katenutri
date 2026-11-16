@@ -1,4 +1,4 @@
-const C = 'katenutri-v2';
+const C = 'katenutri-v3';
 const ASSETS = ['/', '/css/app.css', '/js/main.js', '/icon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(C).then(c => c.addAll(ASSETS)).catch(() => {}));

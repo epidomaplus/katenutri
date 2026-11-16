@@ -1,9 +1,10 @@
-import { api } from './api.js';
+import { api, loadFoods } from './api.js';
 import { bus, esc, setHandlers, toast, modal, emptyState } from './util.js';
 import { fmt, elDate, gramsLabel } from '/shared/text.js';
 import {
   GROUPS, normalizePlan, dayNut, dayEx, sumNut, sumEx, itemFromFood, itemFromRecipe,
   scalePlanData, shoppingList, macroSplit, MICRO_REF, EXCHANGE_DISCLAIMER, groupShort, emptyPlan, shiftDate,
+  PORTION_UNITS, portionPhrase, applyPortionEdit, foodGramsPer,
 } from '/shared/nutrition.js';
 import {
   applyPrescriptionEdit, alignMacroFromPercent, describePrescription, prescriptionReady,
@@ -100,7 +101,14 @@ function syncMeals() {
   for (const d of plan.data.days) {
     while (d.meals.length < n) d.meals.push([]);
     d.meals.length = n;
+    if (!Array.isArray(d.mealNotes)) d.mealNotes = [];
+    while (d.mealNotes.length < n) d.mealNotes.push('');
+    d.mealNotes.length = n;
   }
+}
+function itemAt(el) {
+  const [mi, ii] = el.dataset.idx.split(':').map(Number);
+  return plan.data.days[day].meals[mi][ii];
 }
 
 function handlers() {
@@ -120,17 +128,41 @@ function handlers() {
     'mode': (el) => { plan.data.viewMode = el.dataset.mode; schedule(); render(); },
     'panel': (el) => { panel = el.dataset.panel; if (el.dataset.day != null) day = Number(el.dataset.day); render(); },
     'day': (el) => { day = Number(el.dataset.day); panel = 'day'; render(); },
-    'grams': (el) => {
-      const [mi, ii] = el.dataset.idx.split(':').map(Number);
-      plan.data.days[day].meals[mi][ii].grams = Math.max(0, Number(el.value) || 0);
+    'unit': async (el) => {
+      const it = itemAt(el);
+      const unit = el.value;
+      let per = 0;
+      if (unit !== 'g' && it.foodId) {
+        const foods = await loadFoods().catch(() => []);
+        per = foodGramsPer(foods.find(f => f.id === it.foodId), unit);
+      }
+      const res = applyPortionEdit(it, { unit, gramsPerUnit: per });
+      if (res?.error) toast(res.error);
       schedule(); render();
+    },
+    'qty': (el) => {
+      const res = applyPortionEdit(itemAt(el), { quantity: el.value });
+      if (res?.error) toast(res.error);
+      schedule(); render();
+    },
+    'equiv': (el) => {
+      const res = applyPortionEdit(itemAt(el), { grams: el.value });
+      if (res?.error) toast(res.error);
+      schedule(); render();
+    },
+    'meal-note': (el) => {
+      const i = Number(el.dataset.mi);
+      const dayRow = plan.data.days[day];
+      if (!Array.isArray(dayRow.mealNotes)) dayRow.mealNotes = [];
+      dayRow.mealNotes[i] = el.value;
+      schedule();
     },
     'rm': (el) => {
       const [mi, ii] = el.dataset.idx.split(':').map(Number);
       plan.data.days[day].meals[mi].splice(ii, 1);
       schedule(); render();
     },
-    'add-food': (el) => openFoodPicker({ title: 'Στο «' + plan.data.mealNames[el.dataset.mi] + '»', preferences: linked?.preferences, onPick: ({ food, grams, note }) => { plan.data.days[day].meals[el.dataset.mi].push(itemFromFood(food, grams, note)); schedule(); render(); } }),
+    'add-food': (el) => openFoodPicker({ title: 'Στο «' + plan.data.mealNames[el.dataset.mi] + '»', preferences: linked?.preferences, onPick: (picked) => { plan.data.days[day].meals[el.dataset.mi].push(itemFromFood(picked.food, picked.grams, picked.note, picked)); schedule(); render(); } }),
     'add-recipe': async (el) => openRecipePicker(({ recipe, servings }) => { plan.data.days[day].meals[el.dataset.mi].push(itemFromRecipe(recipe, servings)); schedule(); render(); }),
     'meal-tpl': (el) => mealTemplateModal(Number(el.dataset.mi)),
     'meals': () => mealsModal(),
@@ -146,14 +178,19 @@ function handlers() {
     'copy-day': () => {
       const v = document.getElementById('copyTo').value;
       const src = JSON.parse(JSON.stringify(plan.data.days[day].meals));
+      const notes = JSON.parse(JSON.stringify(plan.data.days[day].mealNotes || []));
       const targets = v === 'all' ? plan.data.days.map((_, i) => i).filter(i => i !== day) : [Number(v)];
       if (!confirm('Θα αντικατασταθούν τα γεύματα των επιλεγμένων ημερών.')) return;
-      targets.forEach(i => { plan.data.days[i].meals = JSON.parse(JSON.stringify(src)); });
+      targets.forEach(i => {
+        plan.data.days[i].meals = JSON.parse(JSON.stringify(src));
+        plan.data.days[i].mealNotes = JSON.parse(JSON.stringify(notes));
+      });
       schedule(); render();
     },
     'clear-day': () => {
       if (!confirm('Καθαρισμός της ημέρας;')) return;
       plan.data.days[day].meals = plan.data.mealNames.map(() => []);
+      plan.data.days[day].mealNotes = plan.data.mealNames.map(() => '');
       schedule(); render();
     },
   };
@@ -360,12 +397,21 @@ function targetCards(ex) {
   return `<div class="ex-grid" style="margin-top:8px">${visible.map(r => `<div class="ex-row"><span class="muted">${esc(r.label)}</span><b class="${tone(r.actual, r.target)}">${fmt(r.actual, 1)}${r.target !== '' && r.target != null ? ' / ' + esc(r.target) : ''}</b></div>`).join('')}</div><p class="muted">Τα ισοδύναμα υδατανθράκων είναι το σύνολο CHO ÷ 15 και δεν ταυτίζονται με το άθροισμα των ομάδων.</p>`;
 }
 function cols(showM, showE) {
-  return `<th>Τρόφιμο</th><th class="num">g</th>${showM ? '<th class="num">kcal</th><th class="num hm">Π</th><th class="num hm">Υ</th><th class="num hm">Λ</th>' : ''}${showE ? '<th class="num">Υδατ.</th><th>Ομάδα</th>' : ''}<th></th>`;
+  return `<th>Τρόφιμο</th><th>Ποσότητα</th>${showM ? '<th class="num">kcal</th><th class="num hm">Π</th><th class="num hm">Υ</th><th class="num hm">Λ</th>' : ''}${showE ? '<th class="num">Υδατ.</th><th>Ομάδα</th>' : ''}<th></th>`;
+}
+function portionCell(it) {
+  const unit = PORTION_UNITS.some(u => u.id === it.unit) ? it.unit : 'g';
+  const opts = PORTION_UNITS.map(u => `<option value="${u.id}" ${unit === u.id ? 'selected' : ''}>${esc(u.label)}</option>`).join('');
+  const step = unit === 'g' ? '5' : unit === 'cup' ? '0.25' : '0.5';
+  const qty = unit === 'g' ? it.grams : it.quantity;
+  const gramsField = unit === 'g' ? '' : `<input type="number" min="0" step="1" inputmode="decimal" placeholder="γραμμάρια" aria-label="Γραμμάρια" value="${esc(it.grams)}" data-change="equiv" data-idx="__IDX__">`;
+  return `<td class="portion"><select data-change="unit" data-idx="__IDX__" aria-label="Μονάδα">${opts}</select><input type="number" min="0" step="${step}" inputmode="decimal" aria-label="Ποσότητα" value="${esc(qty)}" data-change="qty" data-idx="__IDX__">${gramsField}</td>`;
 }
 function cells(it, showM, showE) {
   const nut = sumNut([it]); const ex = sumEx([it]);
   const group = it.isRecipe ? 'συνταγή' : (it.group ? `${fmt(ex.groups[it.group] || 0, 1)} ${groupShort(it.group)}` : '—');
-  return `<td>${esc(it.name)}${it.note ? `<div class="muted">${esc(it.note)}</div>` : ''}</td><td class="num"><input class="g" type="number" min="0" step="5" value="${esc(it.grams)}" data-change="grams" data-idx="__IDX__"></td>${showM ? `<td class="num">${fmt(nut.kcal, 0)}</td><td class="num hm">${fmt(nut.protein, 1)}</td><td class="num hm">${fmt(nut.carbs, 1)}</td><td class="num hm">${fmt(nut.fat, 1)}</td>` : ''}${showE ? `<td class="num">${fmt(ex.carb, 1)}</td><td>${esc(group)}</td>` : ''}`;
+  const phrase = it.unit && it.unit !== 'g' ? `<div class="muted">${esc(portionPhrase(it))}</div>` : '';
+  return `<td>${esc(it.name)}${phrase}${it.note ? `<div class="muted">${esc(it.note)}</div>` : ''}</td>${portionCell(it)}${showM ? `<td class="num">${fmt(nut.kcal, 0)}</td><td class="num hm">${fmt(nut.protein, 1)}</td><td class="num hm">${fmt(nut.carbs, 1)}</td><td class="num hm">${fmt(nut.fat, 1)}</td>` : ''}${showE ? `<td class="num">${fmt(ex.carb, 1)}</td><td>${esc(group)}</td>` : ''}`;
 }
 function dayHtml(showM, showE, dateHint) {
   const d = plan.data.days[day];
@@ -374,8 +420,10 @@ function dayHtml(showM, showE, dateHint) {
     const meal = d.meals[mi] || [];
     const nut = sumNut(meal); const ex = sumEx(meal);
     const rows = meal.map((it, ii) => `<tr>${cells(it, showM, showE).replaceAll('__IDX__', mi + ':' + ii)}<td><button type="button" class="sm danger" data-act="rm" data-idx="${mi}:${ii}" aria-label="Αφαίρεση">✕</button></td></tr>`).join('');
+    const note = (d.mealNotes || [])[mi] || '';
     return `<div class="card meal"><div class="hd"><h3>${esc(name)}</h3><span class="pill">${fmt(nut.kcal, 0)} kcal</span>${showE ? `<span class="pill">${fmt(ex.carb, 1)} υδατ.</span>` : ''}<button type="button" class="sm primary" data-act="add-food" data-mi="${mi}">+ Τρόφιμο</button><button type="button" class="sm" data-act="add-recipe" data-mi="${mi}">Συνταγή</button><button type="button" class="sm" data-act="meal-tpl" data-mi="${mi}">Πρότυπο</button></div>
-      ${meal.length ? `<div class="table-wrap"><table><tr>${cols(showM, showE)}</tr>${rows}<tr class="tot"><td>Σύνολο</td><td></td>${showM ? `<td class="num">${fmt(nut.kcal, 0)}</td><td class="num hm">${fmt(nut.protein, 1)}</td><td class="num hm">${fmt(nut.carbs, 1)}</td><td class="num hm">${fmt(nut.fat, 1)}</td>` : ''}${showE ? `<td class="num">${fmt(ex.carb, 1)}</td><td class="muted">${esc(exText(ex))}</td>` : ''}<td></td></tr></table></div>` : '<p class="muted">Κανένα τρόφιμο.</p>'}</div>`;
+      ${meal.length ? `<div class="table-wrap"><table><tr>${cols(showM, showE)}</tr>${rows}<tr class="tot"><td>Σύνολο</td><td></td>${showM ? `<td class="num">${fmt(nut.kcal, 0)}</td><td class="num hm">${fmt(nut.protein, 1)}</td><td class="num hm">${fmt(nut.carbs, 1)}</td><td class="num hm">${fmt(nut.fat, 1)}</td>` : ''}${showE ? `<td class="num">${fmt(ex.carb, 1)}</td><td class="muted">${esc(exText(ex))}</td>` : ''}<td></td></tr></table></div>` : '<p class="muted">Κανένα τρόφιμο.</p>'}
+      <div class="meal-notes"><label class="lbl">Σημειώσεις</label><textarea data-input="meal-note" data-mi="${mi}" rows="2" placeholder="Σημειώσεις για αυτό το γεύμα">${esc(note)}</textarea></div></div>`;
   }).join('');
   return `${head}${meals}<div class="card"><label class="lbl">Σημείωση ημέρας</label><input data-input="day-note" value="${esc(d.note || '')}"><div class="actions" style="margin-top:8px"><select id="copyTo"><option value="all">Αντιγραφή σε όλες τις άλλες</option>${plan.data.days.map((x, i) => i !== day ? `<option value="${i}">${esc(x.name)}</option>` : '').join('')}</select><button type="button" data-act="copy-day">Αντιγραφή ημέρας</button><button type="button" class="danger" data-act="clear-day">Καθαρισμός</button></div></div>`;
 }
@@ -400,8 +448,9 @@ function analysisHtml(d, dateHint) {
   }).join('');
   const meals = plan.data.mealNames.map((name, i) => {
     const nutM = sumNut(d.meals[i] || []); const exM = sumEx(d.meals[i] || []);
-    if (!nutM.kcal) return '';
-    return `<tr><td>${esc(name)}</td><td class="num">${fmt(nutM.kcal, 0)}</td><td class="num">${fmt(nutM.protein, 1)}</td><td class="num">${fmt(nutM.carbs, 1)}</td><td class="num">${fmt(nutM.fat, 1)}</td><td class="num">${fmt(exM.carb, 1)}</td></tr>`;
+    const note = String((d.mealNotes || [])[i] || '').trim();
+    if (!nutM.kcal && !(d.meals[i] || []).length && !note) return '';
+    return `<tr><td>${esc(name)}${note ? `<div class="muted">${esc(note)}</div>` : ''}</td><td class="num">${fmt(nutM.kcal, 0)}</td><td class="num">${fmt(nutM.protein, 1)}</td><td class="num">${fmt(nutM.carbs, 1)}</td><td class="num">${fmt(nutM.fat, 1)}</td><td class="num">${fmt(exM.carb, 1)}</td></tr>`;
   }).join('');
   return `${totals(nut, ex, 'Ανάλυση · ' + d.name + (dateHint ? ' · ' + dateHint : ''))}<div class="card"><h2>Μικροθρεπτικά (προσέγγιση)</h2><p class="muted">Σύγκριση με ενδεικτικό μέγεθος ενηλίκων, όχι με στόχο αυτού του πελάτη.</p><div class="table-wrap"><table><tr><th></th><th class="num">Ποσότητα</th><th class="num">%</th><th></th></tr>${micros}</table></div><p><a href="/print.html?sheet=analysis&id=${esc(plan.id)}&day=${day}" target="_blank" rel="noopener">Εκτύπωση ανάλυσης</a></p></div>
   <div class="card"><h2>Γεύματα</h2><div class="table-wrap"><table><tr><th>Γεύμα</th><th class="num">kcal</th><th class="num">Π</th><th class="num">Υ</th><th class="num">Λ</th><th class="num">Υδατ.</th></tr>${meals}</table></div></div>`;
@@ -416,12 +465,19 @@ function mealsModal() {
     m.el.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
       const i = +b.dataset.rm;
       if (d.days.some(x => (x.meals[i] || []).length) && !confirm('Το γεύμα έχει τρόφιμα. Διαγραφή;')) return;
-      d.mealNames.splice(i, 1); syncMeals(); draw();
+      d.mealNames.splice(i, 1);
+      d.days.forEach(x => {
+        x.meals.splice(i, 1);
+        if (Array.isArray(x.mealNotes)) x.mealNotes.splice(i, 1);
+      });
+      syncMeals(); draw();
     });
     m.el.querySelectorAll('[data-up]').forEach(b => b.onclick = () => {
       const i = +b.dataset.up; if (!i) return;
       const swap = arr => { [arr[i - 1], arr[i]] = [arr[i], arr[i - 1]]; };
-      swap(d.mealNames); d.days.forEach(x => swap(x.meals)); draw();
+      swap(d.mealNames);
+      d.days.forEach(x => { swap(x.meals); if (Array.isArray(x.mealNotes)) swap(x.mealNotes); });
+      draw();
     });
   };
   draw();

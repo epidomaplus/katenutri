@@ -1,8 +1,166 @@
-import { r1 } from './text.js';
+import { fmt, r1 } from './text.js';
 import { canonicalizePrescription, emptyMacroTargets } from './prescription.js';
 
 export const DAYS = ['Δευτέρα', 'Τρίτη', 'Τετάρτη', 'Πέμπτη', 'Παρασκευή', 'Σάββατο', 'Κυριακή'];
 export const DEFAULT_MEALS = ['Πρωινό', 'Ενδιάμεσο', 'Μεσημεριανό', 'Απογευματινό', 'Βραδινό'];
+
+export const PORTION_UNITS = [
+  { id: 'g', label: 'Γραμμάρια' },
+  { id: 'piece', label: 'Τεμάχια' },
+  { id: 'cup', label: 'Φλιτζάνια' },
+];
+export const PORTION_UNIT_IDS = PORTION_UNITS.map(u => u.id);
+
+export function perUnitLabel(unit) {
+  return unit === 'cup' ? 'Γραμμάρια ανά φλιτζάνι' : 'Γραμμάρια ανά τεμάχιο';
+}
+
+export function foodGramsPer(food, unit) {
+  if (!food || (unit !== 'piece' && unit !== 'cup')) return 0;
+  const raw = unit === 'piece' ? food.gramsPerPiece : food.gramsPerCup;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function r2qty(n) {
+  return Math.round(Math.max(0, Number(n) || 0) * 100) / 100;
+}
+function r4(n) {
+  return Math.round((Number(n) || 0) * 10000) / 10000;
+}
+function parseLoose(v) {
+  if (v == null) return null;
+  const s = String(v).trim().replace(',', '.');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Old plan lines only have grams. Those stay Γραμμάρια, with the same amount. */
+export function normalizePortion(it = {}) {
+  const unit = PORTION_UNIT_IDS.includes(it.unit) ? it.unit : 'g';
+  if (unit === 'g') {
+    const grams = r1(Math.max(0, Number(it.grams ?? it.quantity) || 0));
+    return { unit: 'g', quantity: grams, grams, gramsManual: false, gramsPerUnit: 0 };
+  }
+  const quantity = r2qty(it.quantity);
+  const gramsGiven = it.grams !== '' && it.grams != null && Number.isFinite(Number(it.grams));
+  let grams = gramsGiven ? r1(Math.max(0, Number(it.grams) || 0)) : 0;
+  let per = Number(it.gramsPerUnit);
+  per = Number.isFinite(per) && per > 0 ? r4(per) : 0;
+  if (!(grams > 0) && per > 0 && quantity > 0) grams = r1(per * quantity);
+  if (!(per > 0) && quantity > 0 && grams > 0) per = r4(grams / quantity);
+  return { unit, quantity, grams, gramsManual: it.gramsManual === true, gramsPerUnit: per };
+}
+
+export function portionPhrase(it, { showGrams = true } = {}) {
+  const p = normalizePortion(it);
+  if (p.unit === 'g') return showGrams ? `${fmt(p.grams, 0)} g` : '';
+  const one = Math.abs(p.quantity - 1) < 0.001;
+  const word = p.unit === 'piece' ? (one ? 'τεμάχιο' : 'τεμάχια') : (one ? 'φλιτζάνι' : 'φλιτζάνια');
+  const digits = Math.abs(p.quantity - Math.round(p.quantity)) < 0.001 ? 0 : 2;
+  const base = `${fmt(p.quantity, digits)} ${word}`;
+  if (showGrams && p.grams > 0) return `${base} (${fmt(p.grams, Math.abs(p.grams % 1) > 0.001 ? 1 : 0)} g)`;
+  return base;
+}
+
+export function resolvePortion({ unit, quantity, gramsText, food }) {
+  const u = PORTION_UNIT_IDS.includes(unit) ? unit : 'g';
+  const qty = parseLoose(quantity);
+  if (u === 'g') {
+    const grams = r1(Math.max(0, qty || 0));
+    return { ok: true, unit: 'g', quantity: grams, grams, gramsManual: false, gramsPerUnit: 0 };
+  }
+  if (!(qty > 0)) return { ok: false, error: 'Συμπληρώστε ποσότητα.' };
+  const typedRaw = gramsText == null ? '' : String(gramsText).trim();
+  if (typedRaw !== '') {
+    const typed = parseLoose(typedRaw);
+    if (!(typed > 0)) return { ok: false, error: 'Τα γραμμάρια πρέπει να είναι θετικός αριθμός.' };
+    return { ok: true, unit: u, quantity: r2qty(qty), grams: r1(typed), gramsManual: true, gramsPerUnit: r4(typed / qty) };
+  }
+  const per = foodGramsPer(food, u);
+  if (per > 0) {
+    return { ok: true, unit: u, quantity: r2qty(qty), grams: r1(per * qty), gramsManual: false, gramsPerUnit: r4(per) };
+  }
+  return { ok: false, needsGrams: true, error: 'Χρειάζονται γραμμάρια.' };
+}
+
+export function resolveMissingGrams({ unit, quantity, totalGrams, perUnit }) {
+  const qty = Number(quantity);
+  if (!(qty > 0)) return { ok: false, error: 'Συμπληρώστε ποσότητα.' };
+  const perText = perUnit != null && String(perUnit).trim() !== '';
+  const totalText = totalGrams != null && String(totalGrams).trim() !== '';
+  const per = perText ? parseLoose(perUnit) : null;
+  const total = totalText ? parseLoose(totalGrams) : null;
+  if (perText && !(per > 0)) return { ok: false, error: 'Τα γραμμάρια ανά μονάδα πρέπει να είναι θετικός αριθμός.' };
+  if (totalText && !(total > 0)) return { ok: false, error: 'Τα γραμμάρια πρέπει να είναι θετικός αριθμός.' };
+  if (!(per > 0) && !(total > 0)) return { ok: false, error: 'Συμπληρώστε γραμμάρια ή γραμμάρια ανά μονάδα.' };
+  if (total > 0) {
+    return {
+      ok: true, unit, quantity: r2qty(qty), grams: r1(total), gramsManual: true,
+      gramsPerUnit: r4(total / qty), savePerUnit: per > 0 ? r1(per) : null,
+    };
+  }
+  return {
+    ok: true, unit, quantity: r2qty(qty), grams: r1(per * qty), gramsManual: false,
+    gramsPerUnit: r4(per), savePerUnit: r1(per),
+  };
+}
+
+export function applyPortionEdit(it, patch = {}) {
+  const cur = normalizePortion(it);
+  if (patch.unit && PORTION_UNIT_IDS.includes(patch.unit) && patch.unit !== cur.unit) {
+    const next = patch.unit;
+    if (next === 'g') {
+      Object.assign(it, { unit: 'g', quantity: cur.grams, grams: cur.grams, gramsManual: false, gramsPerUnit: 0 });
+      return it;
+    }
+    const offered = Number(patch.gramsPerUnit) > 0 ? Number(patch.gramsPerUnit) : 0;
+    const grams = cur.grams;
+    const quantity = offered > 0 && grams > 0
+      ? Math.max(0.25, Math.round((grams / offered) * 100) / 100)
+      : (cur.unit === 'g' ? (grams > 0 ? 1 : 0) : (cur.quantity > 0 ? cur.quantity : 1));
+    Object.assign(it, {
+      unit: next,
+      quantity,
+      grams,
+      gramsManual: !(offered > 0),
+      gramsPerUnit: quantity > 0 && grams > 0 ? r4(grams / quantity) : r4(offered),
+    });
+    return it;
+  }
+  if (patch.quantity != null) {
+    const q = Math.max(0, Number(patch.quantity) || 0);
+    if (cur.unit === 'g') {
+      const grams = r1(q);
+      Object.assign(it, { unit: 'g', quantity: grams, grams, gramsManual: false, gramsPerUnit: 0 });
+      return it;
+    }
+    if (!(q > 0)) return { error: 'Συμπληρώστε ποσότητα.' };
+    const per = cur.gramsPerUnit > 0 ? cur.gramsPerUnit : 0;
+    if (!(per > 0)) return { error: 'Συμπληρώστε γραμμάρια για να υπολογιστούν οι θερμίδες.' };
+    Object.assign(it, {
+      unit: cur.unit, quantity: r2qty(q), grams: r1(per * q), gramsManual: cur.gramsManual, gramsPerUnit: r4(per),
+    });
+    return it;
+  }
+  if (patch.grams != null) {
+    const g = Number(patch.grams);
+    if (!(g > 0)) return { error: 'Συμπληρώστε γραμμάρια για να υπολογιστούν οι θερμίδες.' };
+    const grams = r1(g);
+    if (cur.unit === 'g') {
+      Object.assign(it, { unit: 'g', quantity: grams, grams, gramsManual: false, gramsPerUnit: 0 });
+      return it;
+    }
+    if (!(cur.quantity > 0)) return { error: 'Συμπληρώστε ποσότητα.' };
+    Object.assign(it, {
+      unit: cur.unit, quantity: cur.quantity, grams, gramsManual: true, gramsPerUnit: r4(grams / cur.quantity),
+    });
+    return it;
+  }
+  Object.assign(it, cur);
+  return it;
+}
 
 export const GROUPS = [
   { id: 'starch', label: 'Άμυλο / ψωμί', short: 'Άμυλο', hint: '15 g υδατανθράκων' },
@@ -142,7 +300,7 @@ export function macroSplit(nut) {
 
 export function cleanItems(arr) {
   if (!Array.isArray(arr)) return [];
-  return arr.filter(it => it && typeof it === 'object' && it.name);
+  return arr.filter(it => it && typeof it === 'object' && it.name).map(it => ({ ...it, ...normalizePortion(it) }));
 }
 
 export function emptyExchangeTargets() {
@@ -152,7 +310,7 @@ export function emptyExchangeTargets() {
 export function emptyPlan() {
   return {
     mealNames: DEFAULT_MEALS.slice(),
-    days: DAYS.map(name => ({ name, note: '', meals: DEFAULT_MEALS.map(() => []) })),
+    days: DAYS.map(name => ({ name, note: '', meals: DEFAULT_MEALS.map(() => []), mealNotes: DEFAULT_MEALS.map(() => '') })),
     notes: '',
     startDate: '',
     targetKcal: '',
@@ -172,7 +330,9 @@ export function normalizePlan(data) {
   const days = DAYS.map((name, i) => {
     const d = daysIn[i] || {};
     const meals = mealNames.map((_, mi) => cleanItems(d.meals?.[mi]).slice(0, 40));
-    return { name: String(d.name || name).slice(0, 40), note: String(d.note || '').slice(0, 500), meals };
+    const rawNotes = Array.isArray(d.mealNotes) ? d.mealNotes : [];
+    const mealNotes = mealNames.map((_, mi) => String(rawNotes[mi] || '').replace(/\r\n/g, '\n').trim().slice(0, 1000));
+    return { name: String(d.name || name).slice(0, 40), note: String(d.note || '').slice(0, 500), meals, mealNotes };
   });
   const mode = ['macros', 'exchanges', 'both'].includes(data.viewMode) ? data.viewMode : 'both';
   return {
@@ -210,7 +370,22 @@ export function scalePlanData(data, targetKcal) {
     for (const meal of day.meals) {
       for (const it of meal) {
         const g = Number(it.grams) || 0;
-        if (g > 0) it.grams = Math.max(5, Math.round((g * factor) / 5) * 5);
+        if (!(g > 0)) continue;
+        const next = Math.max(5, Math.round((g * factor) / 5) * 5);
+        const ratio = next / g;
+        it.grams = next;
+        if (it.unit === 'piece' || it.unit === 'cup') {
+          const q = Number(it.quantity) || 0;
+          if (q > 0) {
+            it.quantity = Math.max(0.25, Math.round(q * ratio * 100) / 100);
+            it.gramsPerUnit = Math.round((it.grams / it.quantity) * 10000) / 10000;
+          }
+        } else {
+          it.unit = 'g';
+          it.quantity = next;
+          it.gramsManual = false;
+          it.gramsPerUnit = 0;
+        }
       }
     }
   }
@@ -252,13 +427,24 @@ export function shoppingList(data) {
   return groups;
 }
 
-export function itemFromFood(food, grams, note = '') {
-  const g = Math.max(0, Number(grams) || 0);
+export function itemFromFood(food, grams, note = '', extra = {}) {
+  const portion = normalizePortion({
+    unit: extra.unit,
+    quantity: extra.unit && extra.unit !== 'g' ? extra.quantity : grams,
+    grams: extra.grams != null ? extra.grams : grams,
+    gramsManual: extra.gramsManual,
+    gramsPerUnit: extra.gramsPerUnit,
+  });
+  const g = portion.grams;
   return {
     foodId: food.id,
     name: food.name,
     category: food.category,
     grams: g,
+    unit: portion.unit,
+    quantity: portion.quantity,
+    gramsManual: portion.gramsManual,
+    gramsPerUnit: portion.gramsPerUnit,
     note: String(note || ''),
     kcal: food.kcal, protein: food.protein, carbs: food.carbs, fat: food.fat,
     sugars: food.sugars == null ? null : Number(food.sugars) || 0,
@@ -304,6 +490,10 @@ export function itemFromRecipe(recipe, servingsToAdd = 1) {
     name: recipe.name,
     category: 'Συνταγές',
     grams,
+    unit: 'g',
+    quantity: grams,
+    gramsManual: false,
+    gramsPerUnit: 0,
     servingGrams: one || grams || 1,
     note,
     ...nut100,
