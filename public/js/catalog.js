@@ -4,6 +4,7 @@ import { fmt, norm } from '/shared/text.js';
 import { GROUPS, groupLabel, portionCarbEx, presentRecipe, itemFromFood, EXCHANGE_DISCLAIMER } from '/shared/nutrition.js';
 import { exText } from './format.js';
 import { openFoodPicker } from './picker.js';
+import { supermarketHtml, supermarketHandlers } from './supermarket.js';
 
 let fq = '';
 let fgroup = '';
@@ -17,10 +18,12 @@ export async function foodsPage() {
     if (flags.fasting && !f.fasting) return false;
     if (flags.keto && !f.keto) return false;
     if (fgroup && f.group !== fgroup) return false;
-    if (query && !query.split(/\s+/).every(t => norm(`${f.name} ${f.category} ${groupLabel(f.group)}`).includes(t))) return false;
+    if (query && !query.split(/\s+/).every(t => norm(`${f.name} ${f.brand || ''} ${f.barcode || ''} ${f.category} ${groupLabel(f.group)}`).includes(t))) return false;
     return true;
   });
+  const market = await supermarketHtml();
   setHandlers({
+    ...supermarketHandlers(),
     'fq': (el) => {
       fq = el.value; const pos = el.selectionStart;
       bus.refresh().then(() => { const i = document.querySelector('[data-input="fq"]'); if (i) { i.focus(); i.setSelectionRange(pos, pos); } });
@@ -28,6 +31,12 @@ export async function foodsPage() {
     'fg': (el) => { fgroup = el.value; bus.refresh(); },
     'ff': (el) => { flags[el.dataset.flag] = el.checked; bus.refresh(); },
     'add-food': () => customFoodModal(),
+    'edit-food': (el) => customFoodModal(list.find(f => f.id === el.dataset.id) || foods.find(f => f.id === el.dataset.id)),
+    'reset-food': async (el) => {
+      await api('/api/foods/' + el.dataset.id + '/override', { method: 'DELETE' });
+      invalidateFoods();
+      bus.refresh();
+    },
     'del-food': async (el) => {
       if (!confirm('Διαγραφή τροφίμου;')) return;
       await api('/api/foods/' + el.dataset.id, { method: 'DELETE' });
@@ -36,32 +45,47 @@ export async function foodsPage() {
     },
   });
   return `<div class="page-h"><div><h1>Τρόφιμα</h1><p class="muted">${foods.length} στη βάση · ${esc(EXCHANGE_DISCLAIMER)}</p></div><button type="button" class="primary" data-act="add-food">Δικό μου τρόφιμο</button></div>
-  <div class="card"><input data-input="fq" value="${esc(fq)}" placeholder="Αναζήτηση"><div class="actions" style="margin-top:8px"><select data-change="fg"><option value="">Όλες οι ομάδες</option>${GROUPS.map(g => `<option value="${g.id}" ${fgroup === g.id ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}</select>
+  ${market}
+  <div class="card"><input data-input="fq" value="${esc(fq)}" placeholder="Αναζήτηση στα τρόφιμά μου"><div class="actions" style="margin-top:8px"><select data-change="fg"><option value="">Όλες οι ομάδες</option>${GROUPS.map(g => `<option value="${g.id}" ${fgroup === g.id ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}</select>
     <label class="checkline"><input type="checkbox" data-change="ff" data-flag="vegan" ${flags.vegan ? 'checked' : ''}> Vegan</label>
     <label class="checkline"><input type="checkbox" data-change="ff" data-flag="fasting" ${flags.fasting ? 'checked' : ''}> Νηστεία</label>
     <label class="checkline"><input type="checkbox" data-change="ff" data-flag="keto" ${flags.keto ? 'checked' : ''}> Keto</label></div></div>
   <div class="card table-wrap"><table><tr><th>Τρόφιμο</th><th>Ομάδα</th><th class="num">kcal</th><th class="num hm">Π</th><th class="num hm">Υ</th><th class="num hm">Λ</th><th class="num">Υδατ. μερίδας</th><th></th></tr>
-  ${list.slice(0, 300).map(f => `<tr><td><b>${esc(f.name)}</b><div class="muted">${esc(f.category)} · ${esc(f.portionLabel || '')} ${f.portionGrams} g${f.exchangeNote ? ' · ' + esc(f.exchangeNote) : ''}</div></td><td>${esc(groupLabel(f.group))}${f.vegan ? ' · vegan' : ''}${f.fasting ? ' · νηστ.' : ''}${f.keto ? ' · keto' : ''}</td><td class="num">${fmt(f.kcal, 0)}</td><td class="num hm">${fmt(f.protein, 1)}</td><td class="num hm">${fmt(f.carbs, 1)}</td><td class="num hm">${fmt(f.fat, 1)}</td><td class="num">${fmt(portionCarbEx(f), 1)}</td><td>${f.custom ? `<button type="button" class="sm danger" data-act="del-food" data-id="${esc(f.id)}">Διαγραφή</button>` : ''}</td></tr>`).join('')}</table>
+  ${list.slice(0, 300).map(f => `<tr><td><b>${esc(f.name)}</b><div class="muted">${esc(f.brand || '')}${f.brand ? ' · ' : ''}${esc(f.category)} · ${esc(f.portionLabel || '')} ${f.portionGrams} g${f.barcode ? ' · ' + esc(f.barcode) : ''}${f.overridden ? ' · τροποποιημένο' : ''}</div><div class="muted">Υδατάνθρακες ${fmt(f.carbs, 1)} g${f.sugars == null ? '' : ', από τους οποίους σάκχαρα ' + fmt(f.sugars, 1) + ' g'} · Λιπαρά ${fmt(f.fat, 1)} g${f.saturated == null ? '' : ', από τα οποία κορεσμένα ' + fmt(f.saturated, 1) + ' g'}</div></td><td>${esc(groupLabel(f.group))}${f.vegan ? ' · vegan' : ''}${f.fasting ? ' · νηστ.' : ''}${f.keto ? ' · keto' : ''}</td><td class="num">${fmt(f.kcal, 0)}</td><td class="num hm">${fmt(f.protein, 1)}</td><td class="num hm">${fmt(f.carbs, 1)}</td><td class="num hm">${fmt(f.fat, 1)}</td><td class="num">${fmt(portionCarbEx(f), 1)}</td><td><button type="button" class="sm" data-act="edit-food" data-id="${esc(f.id)}">Επεξεργασία</button>${f.overridden ? ` <button type="button" class="sm" data-act="reset-food" data-id="${esc(f.id)}">Επαναφορά</button>` : ''}${f.custom ? ` <button type="button" class="sm danger" data-act="del-food" data-id="${esc(f.id)}">Διαγραφή</button>` : ''}</td></tr>`).join('')}</table>
   ${list.length > 300 ? '<p class="muted">Εμφανίζονται τα πρώτα 300. Στενέψτε την αναζήτηση.</p>' : ''}</div>`;
 }
 
-function customFoodModal() {
-  const m = modal(`<h2>Δικό μου τρόφιμο</h2><p class="muted">Ανά 100 g. Το ισοδύναμο υπολογίζεται από την ομάδα και τα γραμμάρια.</p><form id="cf">
-    <label class="lbl">Όνομα</label><input name="name" required>
-    <div class="grid-2"><div><label class="lbl">Κατηγορία</label><input name="category" value="Δικά μου"></div><div><label class="lbl">Ομάδα ισοδυνάμου</label><select name="group">${GROUPS.map(g => `<option value="${g.id}">${esc(g.label)}</option>`).join('')}</select></div></div>
-    <div class="grid-3"><div><label class="lbl">kcal</label><input name="kcal" type="number" step="any" required></div><div><label class="lbl">Πρωτεΐνη</label><input name="protein" type="number" step="any" required></div><div><label class="lbl">Υδατάνθρακες</label><input name="carbs" type="number" step="any" required></div><div><label class="lbl">Λίπος</label><input name="fat" type="number" step="any" required></div><div><label class="lbl">Φυτικές ίνες</label><input name="fiber" type="number" step="any"></div><div><label class="lbl">Νάτριο mg</label><input name="sodium" type="number" step="any"></div></div>
-    <div class="grid-2"><div><label class="lbl">Μερίδα g</label><input name="portionGrams" type="number" value="100"></div><div><label class="lbl">Περιγραφή μερίδας</label><input name="portionLabel"></div></div>
-    <div class="actions"><label class="checkline"><input type="checkbox" name="vegan"> Vegan</label><label class="checkline"><input type="checkbox" name="fasting"> Νηστεία</label><label class="checkline"><input type="checkbox" name="keto"> Keto</label></div>
+function numInput(v) { return v == null ? '' : esc(v); }
+function customFoodModal(food) {
+  const f = food || { category: 'Δικά μου', group: 'starch', portionGrams: 100 };
+  const m = modal(`<h2>${food ? 'Επεξεργασία τροφίμου' : 'Δικό μου τρόφιμο'}</h2><p class="muted">Ανά 100 g. Το ισοδύναμο υπολογίζεται από την ομάδα και τα γραμμάρια.</p><form id="cf">
+    <label class="lbl">Όνομα</label><input name="name" required value="${esc(f.name || '')}">
+    <div class="grid-2"><div><label class="lbl">Μάρκα</label><input name="brand" value="${esc(f.brand || '')}"></div><div><label class="lbl">Barcode</label><input name="barcode" value="${esc(f.barcode || '')}" inputmode="numeric"></div></div>
+    <div class="grid-2"><div><label class="lbl">Κατηγορία</label><input name="category" value="${esc(f.category || 'Δικά μου')}"></div><div><label class="lbl">Ομάδα ισοδυνάμου</label><select name="group">${GROUPS.map(g => `<option value="${g.id}" ${f.group === g.id ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}</select></div></div>
+    <div class="grid-3">
+      <div><label class="lbl">kcal</label><input name="kcal" type="number" step="any" min="0" required value="${numInput(f.kcal)}"></div>
+      <div><label class="lbl">Πρωτεΐνη</label><input name="protein" type="number" step="any" min="0" required value="${numInput(f.protein)}"></div>
+      <div><label class="lbl">Υδατάνθρακες</label><input name="carbs" type="number" step="any" min="0" required value="${numInput(f.carbs)}"><label class="lbl subfield">από τους οποίους σάκχαρα</label><input name="sugars" type="number" step="any" min="0" value="${numInput(f.sugars)}"></div>
+      <div><label class="lbl">Λιπαρά</label><input name="fat" type="number" step="any" min="0" required value="${numInput(f.fat)}"><label class="lbl subfield">από τα οποία κορεσμένα</label><input name="saturated" type="number" step="any" min="0" value="${numInput(f.saturated)}"></div>
+      <div><label class="lbl">Φυτικές ίνες</label><input name="fiber" type="number" step="any" min="0" value="${numInput(f.fiber)}"></div>
+      <div><label class="lbl">Νάτριο mg</label><input name="sodium" type="number" step="any" min="0" value="${numInput(f.sodium)}"></div>
+    </div>
+    <details class="fold"><summary>Ασβέστιο, σίδηρος, βιταμίνες</summary>
+      <div class="grid-2" style="margin-top:8px"><div><label class="lbl">Ασβέστιο mg</label><input name="calcium" type="number" step="any" min="0" value="${numInput(f.calcium)}"></div><div><label class="lbl">Σίδηρος mg</label><input name="iron" type="number" step="any" min="0" value="${numInput(f.iron)}"></div><div><label class="lbl">Βιταμίνη C mg</label><input name="vitC" type="number" step="any" min="0" value="${numInput(f.vitC)}"></div><div><label class="lbl">Βιταμίνη D μg</label><input name="vitD" type="number" step="any" min="0" value="${numInput(f.vitD)}"></div></div>
+    </details>
+    <div class="grid-2"><div><label class="lbl">Μερίδα g</label><input name="portionGrams" type="number" value="${numInput(f.portionGrams ?? 100)}"></div><div><label class="lbl">Περιγραφή μερίδας</label><input name="portionLabel" value="${esc(f.portionLabel || '')}"></div></div>
+    <div class="actions"><label class="checkline"><input type="checkbox" name="vegan" ${f.vegan ? 'checked' : ''}> Vegan</label><label class="checkline"><input type="checkbox" name="fasting" ${f.fasting ? 'checked' : ''}> Νηστεία</label><label class="checkline"><input type="checkbox" name="keto" ${f.keto ? 'checked' : ''}> Keto</label></div>
     <p class="err" id="ferr"></p><button class="primary" type="submit">Αποθήκευση</button>
-  </form>`);
+  </form>`, { wide: true });
   m.el.querySelector('#cf').onsubmit = async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(e.target).entries());
     body.vegan = e.target.vegan.checked; body.fasting = e.target.fasting.checked; body.keto = e.target.keto.checked;
     try {
-      await api('/api/foods', { method: 'POST', body });
+      if (food?.id) await api('/api/foods/' + food.id, { method: 'PUT', body });
+      else await api('/api/foods', { method: 'POST', body });
       invalidateFoods();
-      toast('Το τρόφιμο προστέθηκε');
+      toast(food ? 'Το τρόφιμο ενημερώθηκε' : 'Το τρόφιμο προστέθηκε');
       m.close(); bus.refresh();
     } catch (err) { m.el.querySelector('#ferr').textContent = err.message; }
   };
