@@ -38,7 +38,7 @@ export function openFoodPicker({ title = 'Προσθήκη τροφίμου', pr
       if (flags.fasting && !f.fasting) return false;
       if (flags.keto && !f.keto) return false;
       if (group && f.group !== group) return false;
-      if (query && !query.split(/\s+/).every(t => norm(`${f.name} ${f.category} ${groupShort(f.group)}`).includes(t))) return false;
+      if (query && !query.split(/\s+/).every(t => norm(`${f.name} ${f.brand || ''} ${f.barcode || ''} ${f.category} ${groupShort(f.group)}`).includes(t))) return false;
       return true;
     }).slice(0, 80);
     m.el.querySelector('#list').innerHTML = list.map(f => {

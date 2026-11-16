@@ -3,12 +3,15 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { FOODS, byId as foodById } from './foods.js';
+import { FOODS } from './foods.js';
 import { db, save, uid, owned, findOwned, DATA_DIR, STORAGE, initStore, persistMiddleware, storageInfo, pingDb, closeStore } from './lib/store.js';
+import { initCatalog } from './lib/catalog-store.js';
+import { mountCatalog } from './lib/catalog-routes.js';
+import { listFoodsFor, createCustomFood, updateFood, deleteCustomFood, clearOverride, resolveFood } from './lib/food-records.js';
 import { hashPw, checkPw, setSession, clearSession, currentUser, publicUser, auth, authDiet, authClient, tooMany, markFail } from './lib/auth.js';
-import { clientInput, visitInput, planData, foodInput, str, text, optNum, flag, reqEmail, httpUrl } from './lib/validate.js';
+import { clientInput, visitInput, planData, str, text, optNum, flag, reqEmail, httpUrl } from './lib/validate.js';
 import { applyDerived } from './shared/measures.js';
-import { exchangeGramsFor, groupLabel, GROUP_IDS, presentRecipe as recipeMath } from './shared/nutrition.js';
+import { groupLabel, GROUP_IDS, presentRecipe as recipeMath } from './shared/nutrition.js';
 import { prescriptionSummary } from './shared/prescription.js';
 import { norm } from './shared/text.js';
 import { BUILTIN_TEMPLATES } from './lib/templates.js';
@@ -192,9 +195,9 @@ app.post('/api/join', (req, res) => {
 });
 
 app.get('/api/foods', authDiet, (req, res) => {
-  let list = FOODS.concat(db.customFoods.filter(f => f.ownerId === req.user.id));
+  let list = listFoodsFor(req.user.id);
   const q = norm(req.query.q || '').trim();
-  if (q) list = list.filter(f => q.split(/\s+/).every(t => norm(`${f.name} ${f.category} ${groupLabel(f.group)}`).includes(t)));
+  if (q) list = list.filter(f => q.split(/\s+/).every(t => norm(`${f.name} ${f.brand || ''} ${f.barcode || ''} ${f.category} ${groupLabel(f.group)}`).includes(t)));
   if (GROUP_IDS.includes(req.query.group)) list = list.filter(f => f.group === req.query.group);
   if (req.query.vegan === '1') list = list.filter(f => f.vegan);
   if (req.query.fasting === '1') list = list.filter(f => f.fasting);
@@ -202,19 +205,24 @@ app.get('/api/foods', authDiet, (req, res) => {
   res.json(list);
 });
 app.post('/api/foods', authDiet, (req, res) => {
-  const parsed = foodInput(req.body);
-  if (parsed.error) return fail(res, 400, parsed.error);
-  const f = {
-    ...parsed.value, id: 'c_' + uid(), ownerId: req.user.id, custom: true,
-    exchangeGrams: exchangeGramsFor(parsed.value.group, parsed.value),
-    secondaryGroup: '', secondaryPerExchange: 0, exchangeNote: '',
-  };
-  db.customFoods.push(f); save(); res.json(f);
+  const out = createCustomFood(req.user.id, req.body);
+  if (out.error) return fail(res, 400, out.error);
+  res.json(out.food);
+});
+app.put('/api/foods/:id', authDiet, (req, res) => {
+  const out = updateFood(req.user.id, req.params.id, req.body);
+  if (out.error) return fail(res, out.error.includes('δεν βρέθηκε') ? 404 : 400, out.error);
+  res.json(out.food);
+});
+app.delete('/api/foods/:id/override', authDiet, (req, res) => {
+  const out = clearOverride(req.user.id, req.params.id);
+  if (out.error) return fail(res, 404, out.error);
+  res.json(out);
 });
 app.delete('/api/foods/:id', authDiet, (req, res) => {
-  const i = db.customFoods.findIndex(f => f.id === req.params.id && f.ownerId === req.user.id);
-  if (i < 0) return fail(res, 404, 'Δεν βρέθηκε δικό σας τρόφιμο.');
-  db.customFoods.splice(i, 1); save(); res.json({ ok: true });
+  const out = deleteCustomFood(req.user.id, req.params.id);
+  if (out.error) return fail(res, 404, out.error);
+  res.json(out);
 });
 
 app.get('/api/clients', authDiet, (req, res) => {
@@ -385,12 +393,14 @@ function recipeInput(b, userId) {
   let servings = Math.round(Number(b.servings) || 1);
   if (servings < 1 || servings > 50) servings = 1;
   const ingredients = (Array.isArray(b.ingredients) ? b.ingredients : []).slice(0, 40).map(i => {
-    const food = foodById.get(i.foodId) || db.customFoods.find(f => f.id === i.foodId && f.ownerId === userId);
+    const food = resolveFood(userId, i.foodId);
     const grams = Math.max(0, Number(i.grams) || 0);
     if (food) {
       const item = {
         foodId: food.id, name: food.name, category: food.category, grams, note: '',
         kcal: food.kcal, protein: food.protein, carbs: food.carbs, fat: food.fat,
+        sugars: food.sugars == null ? null : food.sugars,
+        saturated: food.saturated == null ? null : food.saturated,
         fiber: food.fiber || 0, sodium: food.sodium || 0, calcium: food.calcium || 0,
         iron: food.iron || 0, vitC: food.vitC || 0, vitD: food.vitD || 0,
         group: food.group, exchangeGrams: food.exchangeGrams || 0,
@@ -586,6 +596,7 @@ app.get('/api/backup', authDiet, (req, res) => {
     todos: owned(db.todos, id),
     templates: owned(db.templates, id),
     customFoods: owned(db.customFoods, id),
+    foodOverrides: owned(db.foodOverrides, id),
     diary: owned(db.diary, id),
     messages: db.messages.filter(m => m.ownerId === id),
   };
@@ -595,7 +606,7 @@ app.get('/api/backup', authDiet, (req, res) => {
 app.post('/api/backup', authDiet, (req, res) => {
   if (!checkPw(req.body.currentPassword, req.user.passwordHash)) return fail(res, 401, 'Λάθος τρέχων κωδικός.');
   const b = req.body.data || req.body;
-  const arrays = ['clients', 'visits', 'plans', 'recipes', 'appointments', 'todos', 'templates', 'customFoods', 'diary', 'messages'];
+  const arrays = ['clients', 'visits', 'plans', 'recipes', 'appointments', 'todos', 'templates', 'customFoods', 'diary', 'messages', 'foodOverrides'];
   for (const k of arrays) if (b[k] && !Array.isArray(b[k])) return fail(res, 400, 'Μη έγκυρο αρχείο.');
   for (const k of arrays) if ((b[k] || []).length > 8000) return fail(res, 400, 'Το αρχείο είναι μεγαλύτερο από το όριο εισαγωγής.');
   const id = req.user.id;
@@ -619,6 +630,10 @@ app.post('/api/backup', authDiet, (req, res) => {
   db.todos = keep(db.todos).concat(stamp(b.todos));
   db.templates = keep(db.templates).concat(stamp(b.templates));
   db.customFoods = keep(db.customFoods).concat(stamp(b.customFoods));
+  db.foodOverrides = keep(db.foodOverrides).concat((b.foodOverrides || []).map(o => {
+    const foodId = str(o.foodId, 40);
+    return { ...o, ownerId: id, foodId, id: `${id}:${foodId}` };
+  }));
   db.diary = keep(db.diary).concat(stamp(b.diary));
   db.messages = db.messages.filter(m => m.ownerId !== id).concat(stamp(b.messages));
   const ids = new Set(owned(db.clients, id).map(c => c.id));
@@ -627,6 +642,7 @@ app.post('/api/backup', authDiet, (req, res) => {
   res.json({ ok: true, clients: ids.size });
 });
 
+mountCatalog(app);
 app.use('/shared', express.static(path.join(root, 'shared')));
 app.use(express.static(path.join(root, 'public')));
 app.use((req, res) => {
@@ -642,6 +658,7 @@ app.use((err, req, res, next) => {
 
 try {
   await initStore();
+  await initCatalog();
 } catch (err) {
   console.error('[db] could not load data, refusing to start:', err.message);
   process.exit(1);

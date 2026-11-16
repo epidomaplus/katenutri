@@ -11,7 +11,11 @@ const port = 43991;
 const base = 'http://127.0.0.1:' + port;
 const child = spawn(process.execPath, ['server.js'], {
   cwd: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..'),
-  env: { ...process.env, PORT: String(port), DATA_DIR: dir, SESSION_SECRET: 'smoke', ALLOW_SIGNUP: 'true', SEED_DEMO: 'false', NODE_ENV: 'test' },
+  env: (() => {
+    const env = { ...process.env, PORT: String(port), DATA_DIR: dir, SESSION_SECRET: 'smoke', ALLOW_SIGNUP: 'true', SEED_DEMO: 'false', NODE_ENV: 'test', OFF_SEARCH: '0' };
+    delete env.DATABASE_URL;
+    return env;
+  })(),
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let log = '';
@@ -65,7 +69,7 @@ try {
   assert(fib.dri === 38 && fib.perKcal === 28, 'fiber ' + fib.dri + ' ' + fib.perKcal);
   const health = await waitHealthy();
   assert(health.foods >= 200, 'foods ' + health.foods);
-  assert(health.storage === (process.env.DATABASE_URL ? 'postgres' : 'json-file'), 'storage');
+  assert(health.storage === 'json-file', 'storage ' + health.storage);
 
   const bread = FOODS.find(f => f.name === 'Ψωμί λευκό');
   const breadEx = itemEx(itemFromFood(bread, 30));
@@ -110,6 +114,33 @@ try {
   assert(scaled.days[0].meals[0][0].grams > 40, 'scaled grams');
   const shop = shoppingList(plan.data);
   assert(shop.some(g => g.items.some(i => i.name.includes('Βρώμη'))), 'shopping');
+
+  const catalog = await api('/api/catalog/products', { method: 'POST', body: { name: 'Γκρανόλα με σοκολάτα', brand: 'Healthy Habits', barcode: '5202535179175', kcal: 480, protein: 10.5, carbs: 55.2, sugars: 17, fat: 22, saturated: 3.9, fiber: 9.5, salt: 0.03 } });
+  assert(catalog.id && catalog.sugars === 17 && catalog.saturated === 3.9, 'catalog product');
+  const found = await api('/api/catalog/search?q=' + encodeURIComponent('γκρανολα'));
+  assert(found.products.some(p => p.barcode === '5202535179175'), 'accent search γκρανολα');
+  const foundBrand = await api('/api/catalog/search?q=' + encodeURIComponent('healthy habits'));
+  assert(foundBrand.products.some(p => p.id === catalog.id), 'latin brand search');
+  const adopted = await api('/api/catalog/products/' + catalog.id + '/adopt', { method: 'POST' });
+  assert(adopted.custom && adopted.category === 'Σούπερ μάρκετ' && adopted.sugars === 17, 'adopted food');
+  const byCode = await api('/api/catalog/barcode/5202535179175');
+  assert(byCode.product && byCode.source === 'local', 'barcode local');
+  const missingCode = await api('/api/catalog/barcode/0000000000000');
+  assert(missingCode.product === null, 'barcode miss stays local when OFF search is off');
+  const breadFood = (await api('/api/foods?q=' + encodeURIComponent('ψωμί λευκό'))).find(f => f.name === 'Ψωμί λευκό');
+  const edited = await api('/api/foods/' + breadFood.id, { method: 'PUT', body: { ...breadFood, sugars: 2, saturated: 0.4, brand: 'Φούρνος' } });
+  assert(edited.sugars === 2 && edited.saturated === 0.4 && edited.brand === 'Φούρνος' && edited.overridden, 'builtin edit');
+  const tooSweet = await fetch(base + '/api/foods/' + breadFood.id, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify({ ...breadFood, sugars: 80, saturated: 0.2 }) });
+  assert(tooSweet.status === 400, 'sugars above carbs ' + tooSweet.status);
+  const csv = 'Barcode,Όνομα,Μάρκα,kcal,Πρωτεΐνη,Υδατάνθρακες,Σάκχαρα,Λιπαρά,Κορεσμένα,Φυτικές ίνες,Αλάτι\n5200000000012,giaourti,Marata,80,8,5,4,2,1,0,0.1\n,Χωρίς μακρο,Μάρκα,80,8,5,9,2,1,0,0.1\n';
+  const imported = await api('/api/catalog/import', { method: 'POST', body: { filename: 't.csv', data: Buffer.from(csv).toString('base64') } });
+  assert(imported.imported === 1 && imported.errorCount === 1, 'csv import ' + JSON.stringify(imported));
+  const yogurt = await api('/api/catalog/search?q=' + encodeURIComponent('γιαουρτι'));
+  assert(yogurt.products.some(p => p.brand === 'Μαράτα' && p.sugars === 4), 'csv greeklish');
+  const off = await api('/api/catalog/off-import');
+  assert(off.status === 'idle' && !off.running, 'off import not started ' + off.status);
+  const tpl = await fetch(base + '/api/catalog/template', { headers: { Cookie: cookie } });
+  assert(tpl.ok && (tpl.headers.get('content-type') || '').includes('spreadsheet'), 'template');
 
   const recipe = await api('/api/recipes', { method: 'POST', body: { name: 'Μπολ', servings: 1, ingredients: [{ foodId: oat.id, grams: 40 }, { foodId: milk.id, grams: 200 }] } });
   assert(recipe.perServing.kcal > 100, 'recipe kcal');
