@@ -1,7 +1,7 @@
 import { api, state } from './api.js';
 import { bus, esc, setHandlers, toast } from './util.js';
 import { fmt, elDate, todayISO } from '/shared/text.js';
-import { normalizePlan, dayNut, dayEx, sumEx, EXCHANGE_DISCLAIMER } from '/shared/nutrition.js';
+import { normalizePlan, dayNut, dayEx, sumEx, EXCHANGE_DISCLAIMER, portionPhrase } from '/shared/nutrition.js';
 import { prescriptionSummary } from '/shared/prescription.js';
 import { exText } from './format.js';
 
@@ -23,17 +23,24 @@ async function plan() {
   const full = await api('/api/portal/plans/' + chosen.id);
   const data = normalizePlan(full.data);
   let mode = localStorage.portalMode || 'both';
+  const dayVisible = (day) => (day.meals || []).some(m => (m || []).length) || (day.mealNotes || []).some(n => String(n || '').trim());
   const markup = () => data.days.map(day => {
       const n = dayNut(day); const ex = dayEx(day);
-      if (!n.kcal && data.days.some(d => dayNut(d).kcal)) return '';
+      if (!dayVisible(day) && data.days.some(dayVisible)) return '';
       return `<section class="card"><h2>${esc(day.name)} <span class="pill">${fmt(n.kcal, 0)} kcal</span> <span class="pill">${fmt(ex.carb, 1)} υδατ.</span></h2>
         ${data.mealNames.map((name, i) => {
           const items = day.meals[i] || [];
-          if (!items.length) return '';
-          const mt = items.reduce((s, it) => s + (it.kcal * it.grams / 100), 0);
-          return `<p><b>${esc(name)}.</b> ${items.map(it => esc(it.name) + (it.grams ? ' ' + fmt(it.grams, 0) + ' g' : '')).join(', ')}
-            ${mode !== 'exchanges' ? `<span class="muted"> — ${fmt(mt, 0)} kcal</span>` : ''}
-            ${mode !== 'macros' ? `<span class="muted"> — ${esc(exText(sumEx(items)))}</span>` : ''}</p>`;
+          const note = String((day.mealNotes || [])[i] || '').trim();
+          if (!items.length && !note) return '';
+          const mt = items.reduce((s, it) => s + ((Number(it.kcal) || 0) * (Number(it.grams) || 0) / 100), 0);
+          const line = items.map(it => {
+            const phrase = portionPhrase(it);
+            return esc(it.name) + (phrase ? ' ' + esc(phrase) : '');
+          }).join(', ');
+          return `<div><p><b>${esc(name)}.</b> ${line}
+            ${items.length && mode !== 'exchanges' ? `<span class="muted"> — ${fmt(mt, 0)} kcal</span>` : ''}
+            ${items.length && mode !== 'macros' ? `<span class="muted"> — ${esc(exText(sumEx(items)))}</span>` : ''}</p>
+            ${note ? `<p class="muted" style="white-space:pre-wrap">${esc(note)}</p>` : ''}</div>`;
         }).join('') || '<p class="muted">Κενή ημέρα.</p>'}
         ${mode !== 'macros' ? `<p class="muted">${esc(exText(ex))}</p>` : ''}</section>`;
     }).join('');

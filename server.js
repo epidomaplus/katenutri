@@ -9,7 +9,7 @@ import { initCatalog } from './lib/catalog-store.js';
 import { mountCatalog } from './lib/catalog-routes.js';
 import { listFoodsFor, createCustomFood, updateFood, deleteCustomFood, clearOverride, resolveFood } from './lib/food-records.js';
 import { hashPw, checkPw, setSession, clearSession, currentUser, publicUser, auth, authDiet, authClient, tooMany, markFail } from './lib/auth.js';
-import { clientInput, visitInput, planData, str, text, optNum, flag, reqEmail, httpUrl } from './lib/validate.js';
+import { clientInput, visitInput, planData, sanitizeItem, str, text, optNum, flag, reqEmail, httpUrl } from './lib/validate.js';
 import { applyDerived } from './shared/measures.js';
 import { groupLabel, GROUP_IDS, presentRecipe as recipeMath } from './shared/nutrition.js';
 import { prescriptionSummary } from './shared/prescription.js';
@@ -376,7 +376,7 @@ app.post('/api/templates', authDiet, (req, res) => {
   let data;
   if (kind === 'meal') {
     const items = Array.isArray(req.body.data?.items) ? req.body.data.items.slice(0, 40) : [];
-    data = { items };
+    data = { items: items.map(sanitizeItem).filter(Boolean) };
   } else data = planData(req.body.data);
   const t = { id: uid(), ownerId: req.user.id, kind, name, description: str(req.body.description, 240), data, createdAt: nowIso() };
   db.templates.push(t); save(); res.json({ ...t, builtin: false });

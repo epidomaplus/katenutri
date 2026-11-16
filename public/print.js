@@ -1,5 +1,5 @@
 import { esc, fmt, gramsLabel, elDate } from '/shared/text.js';
-import { normalizePlan, dayNut, dayEx, sumNut, sumEx, shoppingList, MICRO_REF, macroSplit, EXCHANGE_DISCLAIMER, shiftDate, presentRecipe } from '/shared/nutrition.js';
+import { normalizePlan, dayNut, dayEx, sumNut, sumEx, shoppingList, MICRO_REF, macroSplit, EXCHANGE_DISCLAIMER, shiftDate, presentRecipe, portionPhrase } from '/shared/nutrition.js';
 import { prescriptionSummary } from '/shared/prescription.js';
 import { sheetSections } from '/shared/measures.js';
 import { lineChart } from '/shared/chart.js';
@@ -61,12 +61,16 @@ function planArticle(plan, onlyDay) {
     const n = dayNut(day); const ex = dayEx(day);
     const meals = data.mealNames.map((name, i) => {
       const items = day.meals[i] || [];
-      if (!items.length) return '';
-      const line = items.map(it => esc(it.name) + (state.grams ? ' ' + fmt(it.grams, 0) + ' g' : '') + (it.note ? ' (' + esc(it.note) + ')' : '')).join(', ');
+      const note = String((day.mealNotes || [])[i] || '').trim();
+      if (!items.length && !note) return '';
+      const line = items.map(it => {
+        const phrase = portionPhrase(it, { showGrams: state.grams });
+        return esc(it.name) + (phrase ? ' ' + esc(phrase) : '') + (it.note ? ' (' + esc(it.note) + ')' : '');
+      }).join(', ');
       const extra = [];
-      if (state.macros) extra.push(fmt(sumNut(items).kcal, 0) + ' kcal');
-      if (state.exchanges) extra.push(fmt(sumEx(items).carb, 1) + ' υδατ.');
-      return `<div><b>${esc(name)}:</b> ${line}${extra.length ? ` <span class="muted">— ${extra.join(' · ')}</span>` : ''}</div>`;
+      if (state.macros && items.length) extra.push(fmt(sumNut(items).kcal, 0) + ' kcal');
+      if (state.exchanges && items.length) extra.push(fmt(sumEx(items).carb, 1) + ' υδατ.');
+      return `<div><b>${esc(name)}:</b> ${line || '—'}${extra.length ? ` <span class="muted">— ${extra.join(' · ')}</span>` : ''}${note ? `<div class="muted" style="white-space:pre-wrap">${esc(note)}</div>` : ''}</div>`;
     }).join('');
     const headExtra = [];
     if (state.macros) headExtra.push(fmt(n.kcal, 0) + ' kcal');
